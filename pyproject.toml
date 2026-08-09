@@ -1,0 +1,29 @@
+[project]
+name = "advisor"
+version = "0.1.0"
+description = "Conversational AI companion for in-season fantasy football decisions."
+readme = "README.md"
+authors = [
+    { name = "logancooper", email = "logancooper14@yahoo.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.5.5",
+    "pydantic-settings>=2.0",
+]
+
+[project.scripts]
+advisor = "advisor.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

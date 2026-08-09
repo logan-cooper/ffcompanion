@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ffcompanion: local data warehouse (DuckDB file + raw Parquet cache)
+data/*
+!data/.gitkeep
