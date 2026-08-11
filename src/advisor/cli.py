@@ -10,6 +10,7 @@ import argparse
 from collections.abc import Sequence
 
 from advisor import __version__
+from advisor.league_format import TEAM_INTENTS
 
 # nflverse weekly stats begin in 1999. The upper bound is loose on purpose so a
 # new season can be ingested the moment it opens.
@@ -86,6 +87,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status.add_argument("--season", type=int, default=None)
 
+    link = subparsers.add_parser(
+        "link-league", help="Pull a Sleeper user's leagues into the database."
+    )
+    link.add_argument("--username", required=True)
+    link.add_argument("--season", type=int, required=True)
+    link.add_argument("--league-id", default=None, help="Limit to one league.")
+    link.add_argument(
+        "--refresh", action="store_true", help="Re-download the Sleeper player dump."
+    )
+
+    intent = subparsers.add_parser(
+        "set-intent",
+        help="Record how a team is playing the season (contend/rebuild/balanced).",
+    )
+    intent.add_argument("--league-id", required=True)
+    intent.add_argument("--roster-id", type=int, required=True)
+    intent.add_argument("--intent", required=True, choices=TEAM_INTENTS)
+
     return parser
 
 
@@ -129,6 +148,126 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+POSITION_ORDER = ("QB", "RB", "WR", "TE", "K", "DEF")
+
+
+def _roster_by_position(player_ids, pool) -> str:
+    """Render a roster as position-grouped, wrapped name lists."""
+    import textwrap
+
+    grouped: dict[str, list[str]] = {}
+    for pid in player_ids or []:
+        player = pool.get(str(pid)) or {}
+        position = player.get("position") or "?"
+        name = player.get("full_name") or str(pid)
+        grouped.setdefault(position, []).append(name)
+
+    if not grouped:
+        return "      (no rostered players)"
+
+    ordered = [p for p in POSITION_ORDER if p in grouped]
+    ordered += sorted(set(grouped) - set(POSITION_ORDER))
+
+    lines = []
+    for position in ordered:
+        names = ", ".join(sorted(grouped[position]))
+        wrapped = textwrap.wrap(names, width=88) or [""]
+        lines.append(f"      {position:<4} {wrapped[0]}")
+        lines += [f"           {line}" for line in wrapped[1:]]
+    return "\n".join(lines)
+
+
+def _cmd_link_league(args: argparse.Namespace) -> int:
+    import json
+
+    from advisor.db import query
+    from advisor.sources import sleeper
+    from advisor.warehouse.leagues import link_leagues
+
+    user_id, summaries = link_leagues(
+        args.username,
+        args.season,
+        league_id=args.league_id,
+        refresh=args.refresh,
+    )
+    pool = sleeper.get_all_players()
+    print(f"Sleeper user {args.username} -> {user_id}\n")
+
+    for s in summaries:
+        d = s.detection
+        print("=" * 92)
+        print(f"{s.name}   (league {s.league_id})   season {s.season}")
+        print(
+            f"  format: {d.format:<9} superflex: {'yes' if d.superflex else 'no':<4}"
+            f" taxi: {'yes' if d.has_taxi else 'no':<4}"
+            f" continuation: {'yes' if d.is_continuation else 'no'}"
+        )
+        print(f"  detected via: {d.source}")
+        if d.needs_user_confirmation:
+            print("  !! format unresolved — the app must ask before giving advice")
+        print(
+            f"  {s.rosters} rosters | {s.users} users | {s.rostered_players} rostered"
+            f" | {s.available_players:,} free agents | {s.traded_picks} traded picks"
+        )
+
+        rosters = query(
+            """
+            SELECT r.roster_id, r.players, r.starters, r.wins, r.losses,
+                   COALESCE(u.team_name, u.display_name, '(orphan)') AS team,
+                   r.owner_id
+            FROM league_rosters r
+            LEFT JOIN league_users u
+              ON u.league_id = r.league_id AND u.user_id = r.owner_id
+            WHERE r.league_id = ? ORDER BY r.roster_id
+            """,
+            [s.league_id],
+        )
+
+        mine = [r for r in rosters if r["owner_id"] == user_id]
+        others = [r for r in rosters if r["owner_id"] != user_id]
+
+        for label, group in (("YOUR ROSTER", mine), ("OPPONENTS", others)):
+            if not group:
+                continue
+            print(f"\n  {label}")
+            for r in group:
+                players = json.loads(r["players"] or "[]")
+                starters = json.loads(r["starters"] or "[]")
+                print(
+                    f"    roster {r['roster_id']:<3} {r['team']:<28}"
+                    f" {len(players):>3} players, {len(starters):>2} starters"
+                    f"  ({r['wins'] or 0}-{r['losses'] or 0})"
+                )
+                print(_roster_by_position(players, pool))
+
+        if s.traded_picks:
+            picks = query(
+                "SELECT season, round, original_roster_id, owner_roster_id "
+                "FROM traded_picks WHERE league_id = ? "
+                "ORDER BY season, round, original_roster_id LIMIT 10",
+                [s.league_id],
+            )
+            print(f"\n  TRADED PICKS (first 10 of {s.traded_picks})")
+            for p in picks:
+                print(
+                    f"    {p['season']} round {p['round']}"
+                    f"  originally roster {p['original_roster_id']}"
+                    f" -> now roster {p['owner_roster_id']}"
+                )
+        print()
+    return 0
+
+
+def _cmd_set_intent(args: argparse.Namespace) -> int:
+    from advisor.warehouse.leagues import set_team_intent
+
+    set_team_intent(args.league_id, args.roster_id, args.intent)
+    print(
+        f"roster {args.roster_id} in league {args.league_id} -> intent={args.intent}"
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -137,6 +276,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_ingest(args)
     if args.command == "status":
         return _cmd_status(args)
+    if args.command == "link-league":
+        return _cmd_link_league(args)
+    if args.command == "set-intent":
+        return _cmd_set_intent(args)
 
     parser.print_help()
     return 0

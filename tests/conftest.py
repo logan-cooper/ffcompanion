@@ -49,3 +49,28 @@ def warehouse():
 
     yield
     db.close_conn()
+
+
+@pytest.fixture
+def linked_leagues():
+    """Point at real Sleeper leagues, skipping if none have been linked."""
+    db.close_conn()
+    db_path = get_settings().db_path
+    reason = "no linked leagues; run: make link-league USERNAME=<you> SEASON=2025"
+
+    if not db_path.exists():
+        pytest.skip(reason)
+
+    db.get_conn(db_path)
+    try:
+        rows = db.query("SELECT COUNT(*) AS n FROM leagues")
+    except Exception:  # table missing entirely
+        db.close_conn()
+        pytest.skip(reason)
+
+    if not rows[0]["n"]:
+        db.close_conn()
+        pytest.skip(reason)
+
+    yield
+    db.close_conn()

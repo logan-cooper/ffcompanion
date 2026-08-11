@@ -11,6 +11,7 @@ dependencies = [
     "duckdb>=1.5.5",
     "nflreadpy>=0.1.5",
     "pydantic-settings>=2.0",
+    "requests>=2.34.2",
 ]
 
 [project.scripts]
@@ -28,3 +29,5 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Lets test modules import shared fixtures as `tests.fixtures.*`.
+pythonpath = ["."]

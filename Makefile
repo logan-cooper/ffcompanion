@@ -8,7 +8,7 @@ SEASONS ?= $(SEASON)
 ALL_SEASONS ?= 2023,2024,2025
 
 .DEFAULT_GOAL := help
-.PHONY: help sync test ingest warehouse status chat eval clean
+.PHONY: help sync test ingest warehouse status link-league chat eval clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) \
@@ -29,6 +29,9 @@ warehouse: ## Build the full multi-season warehouse (2023,2024,2025)
 
 status: ## Show what has been ingested and when
 	$(UV) run python -m advisor.cli status
+
+link-league: ## Link Sleeper leagues — make link-league USERNAME=you SEASON=2025
+	$(UV) run python -m advisor.cli link-league --username $(USERNAME) --season $(SEASON)
 
 chat: ## Start the conversational REPL (Phase 5)
 	@echo "make chat lands in Phase 5 (agent loop)."

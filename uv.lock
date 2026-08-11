@@ -10,6 +10,7 @@ dependencies = [
     { name = "duckdb" },
     { name = "nflreadpy" },
     { name = "pydantic-settings" },
+    { name = "requests" },
 ]
 
 [package.dev-dependencies]
@@ -22,6 +23,7 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.5.5" },
     { name = "nflreadpy", specifier = ">=0.1.5" },
     { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "requests", specifier = ">=2.34.2" },
 ]
 
 [package.metadata.requires-dev]

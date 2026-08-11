@@ -113,6 +113,92 @@ TABLES: dict[str, str] = {
             fetched_at TIMESTAMP NOT NULL
         )
     """,
+    # scoring_settings and roster_positions are stored verbatim as JSON. The
+    # scoring engine (Phase 3) reads a league's own rules; normalising them into
+    # columns would mean guessing which keys matter before we know.
+    "leagues": """
+        CREATE TABLE IF NOT EXISTS leagues (
+            league_id          VARCHAR NOT NULL,
+            season             INTEGER NOT NULL,
+            name               VARCHAR,
+            status             VARCHAR,
+            total_rosters      INTEGER,
+            previous_league_id VARCHAR,
+            sleeper_type       INTEGER,   -- raw settings.type, kept for audit
+            format             VARCHAR,   -- redraft|keeper|dynasty|survival|unknown
+            format_source      VARCHAR,   -- how detection decided
+            superflex          BOOLEAN,
+            has_taxi           BOOLEAN,
+            is_continuation    BOOLEAN,
+            roster_positions   JSON,
+            scoring_settings   JSON,
+            settings           JSON,
+            fetched_at         TIMESTAMP NOT NULL,
+            PRIMARY KEY (league_id)
+        )
+    """,
+    "league_users": """
+        CREATE TABLE IF NOT EXISTS league_users (
+            league_id    VARCHAR NOT NULL,
+            user_id      VARCHAR NOT NULL,
+            display_name VARCHAR,
+            team_name    VARCHAR,
+            PRIMARY KEY (league_id, user_id)
+        )
+    """,
+    "league_rosters": """
+        CREATE TABLE IF NOT EXISTS league_rosters (
+            league_id  VARCHAR NOT NULL,
+            roster_id  INTEGER NOT NULL,
+            owner_id   VARCHAR,
+            players    JSON,   -- Sleeper player_ids
+            starters   JSON,
+            taxi       JSON,
+            reserve    JSON,
+            wins       INTEGER,
+            losses     INTEGER,
+            ties       INTEGER,
+            fpts       DOUBLE,
+            PRIMARY KEY (league_id, roster_id)
+        )
+    """,
+    # Future picks are tradeable dynasty assets. roster_id is the pick's
+    # original owner; owner_roster_id is who holds it now.
+    "traded_picks": """
+        CREATE TABLE IF NOT EXISTS traded_picks (
+            league_id                VARCHAR NOT NULL,
+            season                   INTEGER NOT NULL,
+            round                    INTEGER NOT NULL,
+            original_roster_id       INTEGER NOT NULL,
+            owner_roster_id          INTEGER,
+            previous_owner_roster_id INTEGER,
+            PRIMARY KEY (league_id, season, round, original_roster_id)
+        )
+    """,
+    # The waiver-wire universe. Must be derived per league, never globally.
+    "available_players": """
+        CREATE TABLE IF NOT EXISTS available_players (
+            league_id  VARCHAR NOT NULL,
+            sleeper_id VARCHAR NOT NULL,
+            player_id  VARCHAR,   -- nflverse gsis_id, NULL when uncrosswalked
+            full_name  VARCHAR,
+            position   VARCHAR,
+            team       VARCHAR,
+            PRIMARY KEY (league_id, sleeper_id)
+        )
+    """,
+    # User-set, never fetched. Deliberately its own table so re-linking a league
+    # cannot wipe it — record and roster age hint at intent but guess wrong
+    # often enough to produce confidently bad advice.
+    "team_intent": """
+        CREATE TABLE IF NOT EXISTS team_intent (
+            league_id  VARCHAR NOT NULL,
+            roster_id  INTEGER NOT NULL,
+            intent     VARCHAR NOT NULL,  -- contend|rebuild|balanced
+            updated_at TIMESTAMP NOT NULL,
+            PRIMARY KEY (league_id, roster_id)
+        )
+    """,
 }
 
 VIEWS: dict[str, str] = {

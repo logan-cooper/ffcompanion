@@ -8,8 +8,8 @@ stats warehouse, so every number in an answer traces back to real data. See
 
 ## Status
 
-Phase 1 complete — local stats warehouse holding the 2025 season. No league
-linking, no scoring, no LLM calls yet.
+Phase 2 complete — stats warehouse (2023–2025) plus Sleeper league ingestion
+with format detection. No scoring engine yet, no LLM calls.
 
 ## Setup
 
@@ -32,6 +32,7 @@ make test
 | `make ingest SEASON=2025` | Load a single season |
 | `make ingest SEASONS=2023,2024,2025` | Load several |
 | `make status` | Show what has been ingested and when |
+| `make link-league USERNAME=you SEASON=2025` | Pull your Sleeper leagues |
 | `make chat` | Conversational REPL (Phase 5) |
 | `make eval` | Eval suite (Phase 6) |
 | `make clean` | Remove the local database, caches, and build artifacts |
@@ -65,8 +66,37 @@ week-1 rolling average never reaches back into the previous year.
 | `schedules` | game |
 | `ingest_log` | source × season × week — answers "is my data stale?" |
 
+League tables (Phase 2): `leagues` (raw `scoring_settings` stored verbatim),
+`league_users`, `league_rosters`, `traded_picks`, `available_players`,
+`team_intent`.
+
 Views: `v_player_season_totals`, `v_player_rolling_3wk` (trailing 3 games),
 `v_position_defense_rank` (rank 1 = fewest yards allowed to that position).
+
+## League format
+
+Format is read from the league, never guessed. The Sleeper `settings.type`
+mapping was verified against real leagues rather than taken from documentation —
+worth doing, because the observed values did not match the common wisdom:
+
+| `settings.type` | format | status |
+|---|---|---|
+| 2 | dynasty | confirmed against two live leagues |
+| 3 | survival | confirmed against one live league |
+| 0 | redraft | documented only — fixture-tested, no live league available |
+| 1 | keeper | documented only — fixture-tested, no live league available |
+
+`survival` is not in the roadmap's enum. It was found in real data and kept
+distinct deliberately: a survival league has no persistent rosters, so answering
+it with redraft logic would produce confident nonsense.
+
+Detection never trusts `type` alone. Taxi squads and a `previous_league_id` are
+carry-over features, so a league claiming `type=0` while having either resolves
+to `unknown` — which the app must treat as "ask the user", never as a default.
+
+`team_intent` (contend / rebuild / balanced) is **user-set, never inferred**, and
+lives in its own table so re-linking a league cannot wipe it. Set it with
+`advisor set-intent --league-id X --roster-id N --intent contend`.
 
 **No fantasy points are stored anywhere.** Points depend on a league's scoring
 settings and are computed at query time in Phase 3. nflverse publishes
