@@ -1,8 +1,14 @@
 UV ?= uv
-SEASON ?= 2025
+
+# One season by default; SEASONS overrides for a multi-season load. Three years
+# is the working set: a single season makes an injured star look washed up, and
+# dynasty valuation needs a multi-year trajectory.
+SEASON  ?= 2025
+SEASONS ?= $(SEASON)
+ALL_SEASONS ?= 2023,2024,2025
 
 .DEFAULT_GOAL := help
-.PHONY: help sync test ingest chat eval clean
+.PHONY: help sync test ingest warehouse status chat eval clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) \
@@ -15,9 +21,14 @@ sync: ## Install/refresh the virtualenv from the lockfile
 test: ## Run the test suite
 	$(UV) run pytest
 
-ingest: ## Load a season of nflverse stats (Phase 1) — make ingest SEASON=2025
-	@echo "make ingest lands in Phase 1 (stats warehouse). SEASON=$(SEASON)"
-	@exit 1
+ingest: ## Load nflverse stats — make ingest SEASON=2025 | SEASONS=2023,2024,2025
+	$(UV) run python -m advisor.cli ingest --season $(SEASONS)
+
+warehouse: ## Build the full multi-season warehouse (2023,2024,2025)
+	$(UV) run python -m advisor.cli ingest --season $(ALL_SEASONS)
+
+status: ## Show what has been ingested and when
+	$(UV) run python -m advisor.cli status
 
 chat: ## Start the conversational REPL (Phase 5)
 	@echo "make chat lands in Phase 5 (agent loop)."

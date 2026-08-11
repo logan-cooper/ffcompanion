@@ -8,7 +8,8 @@ stats warehouse, so every number in an answer traces back to real data. See
 
 ## Status
 
-Phase 0 complete — project skeleton. No data, no tools, no LLM calls yet.
+Phase 1 complete — local stats warehouse holding the 2025 season. No league
+linking, no scoring, no LLM calls yet.
 
 ## Setup
 
@@ -27,10 +28,50 @@ make test
 |---|---|
 | `make sync` | Install/refresh the virtualenv from `uv.lock` |
 | `make test` | Run the test suite |
-| `make ingest SEASON=2025` | Load a season of nflverse stats (Phase 1) |
+| `make warehouse` | Build the full warehouse (2023–2025) in one command |
+| `make ingest SEASON=2025` | Load a single season |
+| `make ingest SEASONS=2023,2024,2025` | Load several |
+| `make status` | Show what has been ingested and when |
 | `make chat` | Conversational REPL (Phase 5) |
 | `make eval` | Eval suite (Phase 6) |
 | `make clean` | Remove the local database, caches, and build artifacts |
+
+Ingest is idempotent — re-running replaces rows rather than duplicating them.
+`--week N` (repeatable) rewrites a single week; `--refresh` re-downloads instead
+of reusing the Parquet cache. After the first run everything is served from
+`data/cache/` (~1.6MB), so a full three-season rebuild takes under a second and
+needs no network.
+
+**Why three seasons.** A single season badly misreads anyone who lost time to
+injury. Malik Nabers in 2025: 271 yards in 4 games — on that data alone he looks
+finished, when in fact he is a 22-year-old who put up 1,206 yards as a rookie the
+year before. Three years also matches the multi-year window dynasty valuation
+needs in Phase 3b. Going back further mostly adds noise, since team and scheme
+changes make older seasons a poor guide.
+
+**Prior seasons are context, not recent form.** Season-scoped data must stay
+labeled by season and never be averaged into one blended number — "averages 700
+yards a season" describes nobody. The views enforce the boundary: both
+`v_player_season_totals` and `v_player_rolling_3wk` partition by season, so a
+week-1 rolling average never reaches back into the previous year.
+
+## Warehouse
+
+| Table | Grain |
+|---|---|
+| `players` | player × season — identity, the nflverse↔Sleeper id crosswalk, and the age/draft fields dynasty valuation needs |
+| `player_week_stats` | player × week — raw counting stats only |
+| `player_week_usage` | player × week — snap/target/air-yards share and red-zone volume |
+| `schedules` | game |
+| `ingest_log` | source × season × week — answers "is my data stale?" |
+
+Views: `v_player_season_totals`, `v_player_rolling_3wk` (trailing 3 games),
+`v_position_defense_rank` (rank 1 = fewest yards allowed to that position).
+
+**No fantasy points are stored anywhere.** Points depend on a league's scoring
+settings and are computed at query time in Phase 3. nflverse publishes
+`fantasy_points` columns and they are dropped on purpose; a test asserts no such
+column exists.
 
 ## Layout
 
@@ -42,8 +83,10 @@ data/                 # gitignored — DuckDB file + Parquet cache
 src/advisor/
   config.py           # env loading, typed settings object
   db.py               # repository layer: get_conn() + query()
-  sources/            # sleeper.py, nflverse.py (Phases 1-2)
-  scoring/            # league scoring + projections (Phase 3)
+  sources/            # nflverse.py (Phase 1), sleeper.py (Phase 2)
+  warehouse/          # schema.py + ingest.py (Phase 1)
+  scoring/            # league rules -> points, format-agnostic (Phase 3)
+  valuation/          # what a player/pick is worth, format-aware (Phase 3b)
   tools/              # the six functions the model calls (Phase 4)
   agent/              # tool-use loop + system prompt (Phase 5)
   cli.py
