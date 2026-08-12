@@ -234,6 +234,69 @@ def report(results: list[CaseResult], label: str) -> str:
     return "\n".join(lines)
 
 
+def scoreboard(runs: dict[str, list[CaseResult]]) -> str:
+    """Compare models side by side. This is the artifact that picks one.
+
+    Ordered by the two things that decide it: whether the model calls the right
+    tools, and whether it makes numbers up. Speed is reported but is a tiebreak —
+    a fast model that fabricates statistics is useless to this app.
+    """
+    lines = [
+        "",
+        "=" * 78,
+        "MODEL COMPARISON",
+        "=" * 78,
+        f"{'model':<20}{'passed':>9}{'tools ok':>10}{'grounded':>10}"
+        f"{'fabricated':>12}{'min':>7}",
+        "-" * 78,
+    ]
+    ranked = []
+    for label, results in runs.items():
+        total = len(results) or 1
+        passed = sum(r.passed for r in results)
+        tools_ok = sum(
+            1
+            for r in results
+            if not any(f.startswith("missing tool") for f in r.failures)
+        )
+        grounding = sum(r.grounding_rate for r in results) / total
+        fabricated = sum(1 for r in results if r.ungrounded)
+        minutes = sum(r.seconds for r in results) / 60
+        ranked.append((tools_ok, grounding, passed, -minutes, label))
+        lines.append(
+            f"{label[:19]:<20}{f'{passed}/{total}':>9}{f'{tools_ok}/{total}':>10}"
+            f"{grounding:>9.0%}{fabricated:>12}{minutes:>7.1f}"
+        )
+
+    lines.append("-" * 78)
+    if ranked:
+        ranked.sort(reverse=True)
+        winner = ranked[0][4]
+        lines.append(f"Best on tool accuracy, then grounding:  {winner}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def per_case_matrix(runs: dict[str, list[CaseResult]]) -> str:
+    """Which cases each model fails — where the differences actually are."""
+    if not runs:
+        return ""
+    labels = list(runs)
+    case_ids = [r.id for r in next(iter(runs.values()))]
+    width = max(len("case"), *(len(c) for c in case_ids)) + 2
+
+    lines = ["", f"{'case':<{width}}" + "".join(f"{l[:14]:<16}" for l in labels), "-" * 78]
+    for index, case_id in enumerate(case_ids):
+        row = f"{case_id:<{width}}"
+        for label in labels:
+            results = runs[label]
+            mark = "pass" if index < len(results) and results[index].passed else "FAIL"
+            row += f"{mark:<16}"
+        lines.append(row)
+    lines.append("")
+    return "\n".join(lines)
+
+
 def as_json(results: list[CaseResult], label: str) -> str:
     return json.dumps(
         {

@@ -8,7 +8,7 @@ SEASONS ?= $(SEASON)
 ALL_SEASONS ?= 2023,2024,2025
 
 .DEFAULT_GOAL := help
-.PHONY: help sync test ingest warehouse status link-league verify-scoring tools-demo chat eval clean
+.PHONY: help sync test ingest warehouse status link-league verify-scoring tools-demo chat eval eval-compare clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) \
@@ -44,6 +44,9 @@ chat: ## Conversational REPL, running locally at no cost
 
 eval: ## Run the eval suite — how you choose a model. make eval MODEL=qwen3:8b
 	$(UV) run python -m advisor.cli eval $(if $(MODEL),--model $(MODEL),)
+
+eval-compare: ## Score several models against the same suite and rank them
+	$(UV) run python -m advisor.cli eval-compare $(if $(MODELS),--models $(MODELS),)
 
 clean: ## Remove the local database, caches, and build artifacts
 	rm -rf data/advisor.duckdb data/cache .pytest_cache

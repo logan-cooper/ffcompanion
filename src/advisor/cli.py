@@ -126,6 +126,18 @@ def build_parser() -> argparse.ArgumentParser:
     evals.add_argument("--case", default=None, help="Run one case by id.")
     evals.add_argument("--json", action="store_true", help="Machine-readable output.")
 
+    compare = subparsers.add_parser(
+        "eval-compare",
+        help="Run the suite against several models and print a scoreboard.",
+    )
+    compare.add_argument(
+        "--models",
+        default="qwen3:8b,llama3.1:8b,hermes3:8b",
+        help="Comma-separated model tags.",
+    )
+    compare.add_argument("--league-id", default=None)
+    compare.add_argument("--week", type=int, default=None)
+
     demo = subparsers.add_parser(
         "tools-demo",
         help="Run all six tools under both a dynasty and a redraft context.",
@@ -508,6 +520,61 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     return 0 if all(r.passed for r in results) else 1
 
 
+def _cmd_eval_compare(args: argparse.Namespace) -> int:
+    """Run the same suite against several models. This is how one gets chosen."""
+    from advisor.agent.backend import BackendError
+    from advisor.context import load_context
+    from advisor.evals import load_cases, per_case_matrix, run_suite, scoreboard
+
+    try:
+        league_id, default_roster = _pick_league(args.league_id)
+    except LookupError as exc:
+        print(exc)
+        return 1
+
+    ctx = load_context(league_id, roster_id=default_roster, current_week=args.week)
+    cases = load_cases()
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+
+    total_minutes = len(models) * len(cases) * 1.2
+    print(f"\n{len(models)} models x {len(cases)} cases against {ctx.name}")
+    print(f"rough estimate {total_minutes:.0f} min. Costs time, not money.\n", flush=True)
+
+    runs: dict[str, list] = {}
+    for model in models:
+        try:
+            backend = _backend_for(model)
+        except BackendError as exc:
+            print(f"skipping {model}: {exc}\n", flush=True)
+            continue
+
+        print(f"--- {model} ---", flush=True)
+        started = time.monotonic()
+        done = 0
+
+        def progress(result) -> None:
+            nonlocal done
+            done += 1
+            elapsed = time.monotonic() - started
+            eta = (elapsed / done) * (len(cases) - done)
+            print(
+                f"  [{done}/{len(cases)}] {'pass' if result.passed else 'FAIL'}  "
+                f"{result.id:<22} {result.seconds:>5.1f}s   ~{eta / 60:.1f}m left",
+                flush=True,
+            )
+
+        runs[model] = run_suite(backend, ctx, cases, on_result=progress)
+        print(flush=True)
+
+    if not runs:
+        print("no models could be evaluated")
+        return 1
+
+    print(scoreboard(runs))
+    print(per_case_matrix(runs))
+    return 0
+
+
 def _backend_for(model: str):
     from advisor.agent.ollama import OllamaBackend
 
@@ -548,6 +615,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_chat(args)
     if args.command == "eval":
         return _cmd_eval(args)
+    if args.command == "eval-compare":
+        return _cmd_eval_compare(args)
     if args.command == "tools-demo":
         return _cmd_tools_demo(args)
     if args.command == "set-intent":

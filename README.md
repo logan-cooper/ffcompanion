@@ -8,9 +8,57 @@ stats warehouse, so every number in an answer traces back to real data. See
 
 ## Status
 
-Phase 4 complete — stats warehouse (2023–2025), Sleeper league ingestion with
+Phase 5 complete — stats warehouse (2023–2025), Sleeper league ingestion with
 format detection, a league-aware scoring engine, format-aware valuation,
-year-round validity, and the six-tool layer. No LLM calls yet.
+year-round validity, the six-tool layer, and a working chat agent.
+
+## Runs entirely on your machine, for free
+
+There is **no API key in this project and no per-token cost**. The model runs
+locally through [Ollama](https://ollama.com), so a question costs $0 whether one
+person uses this or your whole league does.
+
+That works because the model supplies no knowledge — only judgment. Every
+statistic comes from a tool that reads the local warehouse, and the system
+prompt forbids stating a number that didn't. The model's job is picking tools,
+formatting arguments, and writing prose over the results, which a 7–8B
+open-weights model does well. **Nothing here is trained or fine-tuned**; that
+would teach the model football facts it is explicitly not allowed to use.
+
+```sh
+brew install ollama          # or see ollama.com for Linux/Windows
+ollama serve                 # leave running
+ollama pull qwen3:8b         # ~5GB, once
+make chat
+```
+
+**Hardware:** ~16GB RAM is a realistic floor. A 7–8B model at 4-bit
+quantization is ~5GB on disk and ~6GB resident alongside the warehouse. On 8GB
+it will be painful.
+
+**Speed is the tradeoff.** A turn takes tens of seconds rather than one or two,
+and the eval suite runs 15–20 minutes. That is the price of free, and it is
+worth it here.
+
+### Choosing a model
+
+Running locally, model choice is the largest variable in the system and it
+cannot be settled by reputation. `make eval-compare` runs the same suite against
+several candidates and ranks them on the two things that decide it — whether the
+model calls the right tools, and whether it invents numbers:
+
+```sh
+make eval-compare MODELS=qwen3:8b,llama3.1:8b,hermes3:8b
+```
+
+```
+model                  passed  tools ok  grounded  fabricated    min
+------------------------------------------------------------------
+qwen3:8b                  …/12      …/12       …%           …      …
+```
+
+Speed is reported but is only a tiebreak: a fast model that fabricates
+statistics is useless to an app whose entire premise is traceable numbers.
 
 ## Setup
 
@@ -36,8 +84,8 @@ make test
 | `make link-league USERNAME=you SEASON=2025` | Pull your Sleeper leagues |
 | `make verify-scoring` | Check scoring against points Sleeper actually recorded |
 | `make tools-demo` | Print all six tools under both a dynasty and a redraft context |
-| `make chat` | Conversational REPL (Phase 5) |
-| `make eval` | Eval suite (Phase 6) |
+| `make chat` | Conversational REPL, running locally at no cost |
+| `make eval MODEL=qwen3:8b` | Eval suite — how a model gets chosen |
 | `make clean` | Remove the local database, caches, and build artifacts |
 
 Ingest is idempotent — re-running replaces rows rather than duplicating them.
@@ -236,8 +284,14 @@ Two subtleties worth knowing:
 
 ## Tools
 
-Six pure functions the model will call in Phase 5. Each takes `league_id`,
-returns a JSON-serialisable dict, and caps its own output.
+Six pure functions the model calls. Each returns a JSON-serialisable dict and
+caps its own output.
+
+**They take no session identifiers.** `league_id` and the user's own `roster_id`
+are bound by the agent loop, not asked of the model — it cannot know those
+values, and a real trace showed it passing the league's *name* where an id
+belonged. Every argument removed from a schema is one fewer way a small model
+produces an unusable call.
 
 | Tool | Purpose |
 |---|---|
@@ -285,21 +339,28 @@ column exists.
 
 ```
 pyproject.toml
-.env.example          # ANTHROPIC_API_KEY, DB_PATH, DEFAULT_LEAGUE_ID
+.env.example          # MODEL, OLLAMA_HOST, DB_PATH, DEFAULT_LEAGUE_ID
 Makefile
 data/                 # gitignored — DuckDB file + Parquet cache
 src/advisor/
   config.py           # env loading, typed settings object
   db.py               # repository layer: get_conn() + query()
   sources/            # nflverse.py (Phase 1), sleeper.py (Phase 2)
-  warehouse/          # schema.py + ingest.py (Phase 1)
+  warehouse/          # schema.py, ingest.py, leagues.py (Phases 1-2)
   scoring/            # league rules -> points, format-agnostic (Phase 3)
   valuation/          # what a player/pick is worth, format-aware (Phase 3b)
   tools/              # the six functions the model calls (Phase 4)
-  agent/              # tool-use loop + system prompt (Phase 5)
+  agent/              # backend seam, Ollama client, loop, prompt (Phase 5)
+  evals/              # harness that picks the model (Phase 6)
   cli.py
+evals/cases.yaml
 tests/
 ```
+
+**The backend is one seam.** `agent/backend.py` defines the interface;
+`agent/ollama.py` is the only module that speaks HTTP. The loop, the tools, and
+everything below them never learn what is generating tokens — so swapping
+runtimes later touches one file.
 
 **Database access rule:** nothing outside [src/advisor/db.py](src/advisor/db.py)
 imports `duckdb`. Every other module uses `get_conn()` and `query()`. That is

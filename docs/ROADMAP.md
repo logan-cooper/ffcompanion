@@ -1,11 +1,19 @@
 # Fantasy Football Advisor — Implementation Roadmap
 
-**Local-first build. No cloud infrastructure until Phase 8.**
+**Local-first, end to end. No cloud infrastructure, and no API key at any
+phase.** The stats warehouse, the database, and the model all run on the user's
+own machine, so a question costs $0 no matter how many people use the app.
 
 A conversational AI companion for in-season fantasy football decisions (trades,
 waivers, start/sit). The user chats freely; the model calls deterministic tools
 that read a local stats warehouse, so every number in an answer traces back to
 real data.
+
+**The model supplies no knowledge — only judgment.** Every statistic comes from
+a tool, and the model is forbidden from stating one that did not. That is what
+makes a small open-weights model sufficient here, and it is why fine-tuning is
+the wrong instinct: the model's job is choosing tools and writing prose over
+their results, not knowing football. See Phase 5.
 
 **Supports both redraft and dynasty leagues.** This is not a cosmetic flag — the
 two formats disagree about what a good decision *is*, so league format is a
@@ -38,7 +46,9 @@ with the model, and debugging it through a chat interface is miserable.
                          │
               ┌──────────▼──────────┐
               │  Agent loop         │  Phase 5
-              │  (Anthropic API)    │
+              │  local model via    │
+              │  Ollama — no API    │
+              │  key, $0 per query  │
               └──────────┬──────────┘
                          │ tool_use / tool_result
               ┌──────────▼──────────┐
@@ -61,7 +71,7 @@ with the model, and debugging it through a chat interface is miserable.
 │   Phase 3     │ │   Phase 3b   │ │               │ │               │
 └───────────────┘ └──────────────┘ └───────────────┘ └───────────────┘
                          │
-                    DuckDB file (local)  →  Postgres (Phase 8)
+                    DuckDB file (local, permanently)
 ```
 
 `LeagueContext` sits **below** the tool layer, not inside it: valuation needs the
@@ -144,7 +154,7 @@ tradeoff instead of collapsing it into one score.
   ```
   fantasy-advisor/
     pyproject.toml
-    .env.example          # ANTHROPIC_API_KEY, DB_PATH, DEFAULT_LEAGUE_ID
+    .env.example          # MODEL, OLLAMA_HOST, DB_PATH, DEFAULT_LEAGUE_ID
     README.md
     Makefile              # make ingest / make chat / make test / make eval
     data/                 # gitignored — DuckDB file + Parquet cache
@@ -570,18 +580,55 @@ be able to either.
 
 ---
 
-## Phase 5 — Agent loop
+## Phase 5 — Agent loop (local model)
 
-**Goal:** Open-ended conversation in the terminal.
+**Goal:** Open-ended conversation in the terminal, running entirely on the
+user's own machine.
+
+**Inference is local, and that is a product decision, not a technical one.** A
+hosted API bills per token to whoever owns the key, so publishing this to a
+league would either charge every leaguemate or put all of it on one person's
+card. Running an open-weights model through Ollama makes a question cost $0 no
+matter how many people use it, and removes the API key from the codebase
+entirely.
+
+**Do not train or fine-tune a model.** The instinct is natural and it is wrong
+here. This app was deliberately built so the model needs *no* football
+knowledge — every number comes from a tool, and the prompt below forbids
+stating any statistic that did not. Fine-tuning would teach it facts it is not
+allowed to use, needs thousands of tool-call traces that do not exist, and does
+not reliably improve the thing that actually matters: choosing the right tool
+and emitting valid arguments. The model's job is narrow — pick a tool, format
+JSON, write prose over the result — and 7-8B instruct models already do it.
+
+**Hardware floor:** a 7-8B model at 4-bit quantization is ~5GB on disk and ~6GB
+resident, which targets a 16GB machine. That floor is a real constraint on who
+can run the app; see Phase 8.
 
 **Build:**
-- `agent/loop.py`: the standard tool-use loop — call the API, if
-  `stop_reason == "tool_use"` execute every `tool_use` block, append all results
-  as a single user message, repeat. Hard cap of 8 iterations. Catch tool
-  exceptions and return them *as tool results* so the model can self-correct
-  (usually by re-resolving a name) instead of crashing the request.
+- `agent/backend.py`: a `Backend` Protocol and a `Reply` dataclass. One seam, so
+  the loop and the tool layer never learn which runtime is generating tokens.
+  Deliberately not shaped like any vendor's SDK.
+- `agent/ollama.py`: the only module that speaks HTTP. Translates the registry's
+  tool schemas into the runtime's function format — that translation is a
+  backend concern and must not leak into `tools/`. Its `health()` check should
+  name the exact command that fixes each failure; a runtime that isn't started
+  and a model that isn't pulled are essentially every first-run problem.
+- `agent/loop.py`: the standard tool-use loop — call the backend, execute every
+  returned tool call, append all results, repeat. Hard cap of 8 iterations.
+  Catch tool exceptions and return them *as tool results* so the model can
+  self-correct (usually by re-resolving a name) instead of crashing the request.
+  Small models make more of these mistakes, so this matters more here than it
+  would with a frontier model.
 - `agent/prompt.py`: the system prompt, **assembled per league** rather than a
-  static string. Must include:
+  static string.
+
+  **Write it for a small model, which changes the style.** Long explanatory
+  prose is what you would write for a frontier model; a 7-8B follows short,
+  concrete, imperative rules far more reliably, and every token here competes
+  with tool schemas and tool results for a smaller context window. Order the
+  rules by how badly breaking them hurts — inventing a statistic is the worst
+  failure this app can have, so it goes first. Must include:
   - The current league's name, scoring rules, roster positions, and superflex
     status.
   - Today's date and the current NFL week — **or that the season has not started
@@ -606,9 +653,25 @@ be able to either.
     giving trade advice." Never guess.
 - `cli.py`: a REPL with conversation history, `/week`, `/league`, `/intent`
   (set contend/rebuild/balanced), `/format` (show or override detected format),
-  `/reset`, and a `--verbose` flag that prints every tool call and result.
-  That flag is your primary debugging tool for the rest of the project.
-- Token accounting printed per turn so cost is visible from day one.
+  `/roster`, `/reset`, and a `--verbose` flag that prints every tool call and
+  result. That flag is your primary debugging tool for the rest of the project.
+- Per-turn accounting: tokens, tool calls, and **wall-clock seconds**. Locally
+  the scarce resource is time, not money — a turn takes tens of seconds, so
+  latency is the number worth watching.
+
+**Keep session state out of the schemas.** `league_id` and the user's own
+`roster_id` are things the model cannot know and will therefore guess — a real
+trace had it pass the league's *name* where an id belonged. Bind them in the
+loop instead, and pass the live `LeagueContext` into every tool rather than
+letting each tool rebuild one from an id. Rebuilding silently resets
+`current_week` to "now" and `team_intent` to the default, which answered a
+week-14 contending session as a week-18 balanced one and made the whole Phase 3b
+intent mechanism a no-op. Every argument removed from a schema is one fewer way
+a small model produces an unusable call.
+
+**Flush your progress output.** Local runs take minutes, and Python buffers
+stdout when it isn't a terminal — without `flush=True` a working eval is
+indistinguishable from a hung one. Hosted inference was fast enough to hide this.
 
 **Done when:** you can hold a multi-turn conversation — ask about a trade,
 then follow up with "what if I add my TE?" — and `--verbose` shows sensible tool
@@ -618,13 +681,35 @@ calls with no invented numbers.
 
 ## Phase 6 — Eval harness
 
-**Goal:** Know whether a prompt change made things better or worse.
+**Goal:** Know whether a prompt change made things better or worse — **and pick
+the model.**
+
+**This phase moves earlier than its number suggests.** With a hosted frontier
+model, quality was a given and evals only caught regressions. Running locally,
+model choice is the single largest variable in the system, and it cannot be
+settled by reputation or vibes. So build a *minimal* harness (10-12 cases) as
+soon as the loop runs, use it to choose among candidates, then finish Phase 5's
+prompt tuning against the winner and expand to the full suite.
+
+Pull three candidates in the 7-8B instruct class with documented function
+calling and run the same suite against each. Choose on measured tool-call
+accuracy and grounding, then **record the numbers in this file** so the choice
+is auditable rather than remembered.
 
 **Build:**
 - `evals/cases.yaml` — ~30 questions against your 2025 league with known-correct
   answers. Mix of: simple lookups, comparisons, trades, waiver questions,
   ambiguous player names, questions with no valid answer (a player who doesn't
   exist), and adversarial ones ("just tell me Bijan is a bust").
+- **A `grounded` assertion on every case: each number in the answer must appear
+  in a tool result.** This is the most valuable check in the suite and the one
+  most specific to this app — its entire premise is that numbers are traceable,
+  and unlike tone or length, fabrication is mechanically detectable. Allow
+  rounding (a model reading "23.44" as "23.4" is correct, not inventing) and
+  exempt years and small counts, which are legitimately reasoned about.
+- **Assert on behaviour, not vocabulary.** "does not match any player" and
+  "couldn't find that player" are the same correct answer; a `must_say_any` list
+  tests the model, while a single required phrase tests its word choice.
 - **Every trade and roster-construction case runs twice — once per format** —
   with a `expects_different_answer: true` flag. The single highest-value eval in
   the suite is the paired age-for-production trade: if the redraft and dynasty
@@ -638,7 +723,13 @@ calls with no invented numbers.
   offseason context — using the same questions. Answers should differ in
   confidence and basis, not collapse or contradict themselves. This is the
   cheapest way to catch a regression in the Phase 3c shrinkage.
-- `make eval` prints a pass/fail table and total token cost.
+- `make eval MODEL=x` prints a pass/fail table, tool-call accuracy, grounding
+  rate, and wall-clock time. Print live per-case progress with an ETA — a local
+  suite runs 15-20 minutes, long enough that silence is indistinguishable from
+  a crash.
+- **Do not run `make test` while an eval or chat session is live.** DuckDB takes
+  an exclusive lock, so the suite fails with a hundred confusing connection
+  errors that look like a regression and are not.
 
 **Done when:** the suite runs in one command and you have a baseline score. From
 here on, no prompt or tool change ships without re-running it. This is the part
@@ -646,48 +737,60 @@ of the project that actually teaches you agent engineering.
 
 ---
 
-## Phase 7 — HTTP API and minimal web UI
+## Phase 7 — Local web UI
 
-**Goal:** Something with a URL, still running entirely on your laptop.
+**Goal:** A nicer interface than the terminal, still entirely on the user's
+machine.
 
 **Build:**
-- FastAPI app: `POST /chat` (streaming via SSE), `POST /link-league`,
-  `GET /health`, `GET /data-status`.
+- FastAPI bound to `127.0.0.1`: `POST /chat` (streaming via SSE),
+  `POST /link-league`, `GET /health`, `GET /data-status`.
 - Conversation persistence in DuckDB: `conversations`, `messages`. Load history
-  on each request — the API is stateless, the database holds state.
+  on each request — the HTTP layer is stateless, the database holds state.
 - Single-page frontend: one HTML file, vanilla JS, streaming chat. No build step,
   no framework. Served by FastAPI as a static file. Resist scope creep here.
-- `Dockerfile` + `docker-compose.yml` so the whole thing runs with
-  `docker compose up` on any machine. This is the "downloadable project"
-  milestone.
+- **Stream the response.** A local turn takes tens of seconds; a spinner that
+  long feels broken, where the same wait with tokens appearing does not. This
+  matters more here than it would against a fast hosted API.
 
-**Done when:** a fresh clone plus `docker compose up` gives a working chat app at
-`localhost:8000` with only an Anthropic API key required.
+**No public URL, no auth, no Docker deploy.** Binding to localhost is what keeps
+the app free — the moment it serves other people from one machine, someone is
+paying for that machine's GPU.
+
+**Done when:** a fresh clone plus `make serve` gives a working chat app at
+`localhost:8000`, with no API key of any kind.
 
 ---
 
-## Phase 8 — Deployment
+## Phase 8 — Packaging and distribution
 
-**Goal:** A public URL, with a hard spending cap.
+**Goal:** A leaguemate can install this and use it, and it costs nobody anything.
+
+Local-first inference turns this phase from a deployment into a packaging
+problem, and deletes most of what it used to contain:
+
+- **No cloud host.** A $5/mo box cannot run a 7-8B model; GPU hosting is
+  $50-300/mo and would simply move the bill rather than remove it.
+- **No Postgres migration.** That existed only to serve a cloud deployment.
+  DuckDB is the permanent answer. (The `db.py` repository discipline stays good
+  design regardless — it just isn't load-bearing for a migration anymore.)
+- **No rate limiting, no token budgets, no auth.** There is no invoice to run
+  up and nothing exposed to the internet.
 
 **Build:**
-- **Swap DuckDB → Postgres.** Only `db.py` and the DDL change. Rewrite the
-  derived views in Postgres syntax; the tool layer should need no edits. If it
-  does, the Phase 0 repository layer wasn't strict enough.
-- **Railway Hobby** ($5/mo, which acts as a spending cap) with the opt-in hard
-  spending limit configured *before* the first deploy. One service + Postgres,
-  deployed from a git push. If you'd rather have a flat predictable invoice,
-  Render's Starter web service ($7/mo) plus managed Postgres (from $6/mo) is the
-  alternative.
-- Weekly refresh job: cron (Tuesday morning, after Monday Night Football)
-  running `make ingest SEASON=2026` and re-pulling league rosters.
-- Rate limiting on `/chat` and a per-conversation token budget. Your real cost
-  risk is Anthropic tokens, not hosting — an unauthenticated public chat endpoint
-  is an open invoice.
-- Basic auth or a signup flow before you share the link with your league.
+- A setup script that installs Ollama, pulls the chosen model, builds the
+  warehouse (`make warehouse`), and links a league. First run downloads ~5GB,
+  which is the one genuinely rough edge — tell the user before it starts, not
+  during.
+- Weekly refresh: a cron entry or a documented Tuesday-morning `make ingest
+  SEASON=2026` after Monday Night Football, plus re-pulling league rosters.
+- A hardware note in the README. **~16GB RAM is a real floor**, and a leaguemate
+  on an 8GB machine will have a bad time. Say so honestly up front rather than
+  letting them discover it after a 5GB download.
 
-**Done when:** your leaguemates can use it and your monthly bill is bounded by
-configuration rather than by hope.
+**Done when:** a leaguemate on their own laptop can go from `git clone` to a
+working answer about their roster, and the total cost to everyone involved is
+$0.
 
 ---
 
@@ -730,8 +833,8 @@ configuration rather than by hope.
 |---|---|
 | 1 | 0, 1, 2 |
 | 2 | 3, 3b, 3c |
-| 3 | 4, 5 |
-| 4 | 6, 7, then 8 |
+| 3 | 4, 5 (+ a minimal Phase 6 to choose a model) |
+| 4 | 6 in full, 7, then 8 |
 
 Phase 3b is the one that will run long — the aging curves and pick values are
 fiddly and worth getting right. If you're behind, ship redraft-only through

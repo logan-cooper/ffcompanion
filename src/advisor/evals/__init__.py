@@ -5,9 +5,11 @@ from advisor.evals.runner import (
     as_json,
     check,
     load_cases,
+    per_case_matrix,
     report,
     run_case,
     run_suite,
+    scoreboard,
 )
 
 __all__ = [
@@ -15,7 +17,9 @@ __all__ = [
     "as_json",
     "check",
     "load_cases",
+    "per_case_matrix",
     "report",
     "run_case",
     "run_suite",
+    "scoreboard",
 ]

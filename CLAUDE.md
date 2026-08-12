@@ -4,14 +4,16 @@
 Fantasy football AI advisor. Full plan: docs/ROADMAP.md — read it before
 starting any phase.
 
-**Status: Phase 4 complete** (warehouse 2023-2025, Sleeper leagues, scoring
-engine, format-aware valuation, year-round validity, six-tool layer). Phase 5
-(agent loop) is next — the first phase that makes LLM calls. Don't skip ahead:
-each phase has a "Done when" test that gates the next one.
+**Status: Phase 5 complete** (warehouse 2023-2025, Sleeper leagues, scoring
+engine, format-aware valuation, year-round validity, six-tool layer, local agent
+loop + eval harness). Next: pick a model with `make eval`, then tune the prompt
+against it. Don't skip ahead — each phase has a "Done when" test that gates the
+next one.
 
 ## Stack
 Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
-(Phase 7+), Anthropic SDK for the agent loop.
+(Phase 7+). The agent loop runs a LOCAL open-weights model via Ollama —
+no API key, no per-token cost, anywhere in this project.
 
 ## Hard rules
 - All database access goes through src/advisor/db.py, which exposes exactly
@@ -28,6 +30,18 @@ Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
   everyone by arithmetic; unlabelled that looks like a judgement on the player.
 - Truncate by PRIORITY, not by list length. Dropping whichever list is longest
   removes starters from a deep roster, and a lineup question needs them.
+- The model is LOCAL and small (7-8B). Never suggest a paid API. Two rules
+  follow: keep session state (league_id, the user's roster_id) OUT of tool
+  schemas — the model can't know those values and will guess, so the loop binds
+  them; and write prompts short, ordered, and imperative rather than as prose.
+- Never let a tool rebuild its own LeagueContext from an id. Pass the session's
+  ctx. Rebuilding resets current_week and team_intent to defaults and silently
+  answers the wrong question.
+- Don't run `make test` while `make chat` or `make eval` is live — DuckDB's
+  exclusive lock makes the suite fail with ~100 errors that look like a
+  regression and aren't.
+- Local inference takes tens of seconds per turn and 15-20 min per eval suite.
+  Always flush progress output; unflushed, a working run looks hung.
 - Raw stat tables store counting stats only — no fantasy_points column.
   Scoring is computed per-league at query time (src/advisor/scoring/).
 - Every tool takes league_id and returns a data_as_of field.
@@ -89,8 +103,8 @@ make status               # what's ingested and when
 make link-league USERNAME=cooper257 SEASON=2025
 make verify-scoring       # scoring vs points Sleeper actually recorded
 make tools-demo           # all six tools, dynasty vs redraft, same args
-make chat                 # local CLI — Phase 5, not built yet
-make eval                 # Phase 6, not built yet
+make chat                 # local REPL; needs `ollama serve` running
+make eval MODEL=qwen3:8b  # eval suite; 15-20 min, this is how a model gets picked
 
 Unbuilt targets exit 1 with the phase they land in; that's expected, not a
 broken setup. Everything runs through `uv run` — don't call bare `python`
