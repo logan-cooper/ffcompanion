@@ -4,9 +4,9 @@
 Fantasy football AI advisor. Full plan: docs/ROADMAP.md — read it before
 starting any phase.
 
-**Status: Phase 3 complete** (warehouse 2023-2025, Sleeper leagues, scoring
-engine). Phase 3b (format-aware valuation) is next. Don't skip ahead — each
-phase has a "Done when" test that gates the next one.
+**Status: Phase 3b complete** (warehouse 2023-2025, Sleeper leagues, scoring
+engine, format-aware valuation). Phase 4 (tool layer) is next. Don't skip
+ahead — each phase has a "Done when" test that gates the next one.
 
 ## Stack
 Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
@@ -42,6 +42,16 @@ Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
   ASK the user — never default to a format.
 - team_intent is user-set, never inferred, and lives in its own table so
   re-linking a league can't wipe it. Same rule for any future user-set data.
+  (It does NOT survive deleting data/advisor.duckdb — re-run set-intent.)
+- get_valuation(ctx) in src/advisor/valuation/ is the ONLY place format is
+  branched on. If a tool needs `if format == "dynasty"`, the interface is wrong
+  — fix it there. Tool signatures must be identical in both formats.
+- PlayerValue always carries BOTH win_now and future (future=0 in redraft).
+  Keep them separate all the way to the response so the model can state the
+  tradeoff; collapse only via intent.combined_value, and only at the end.
+- Valuations are floored at zero. Replacement level is free from the wire, so a
+  worse player is worth nothing, never negative — otherwise the model
+  recommends paying someone to take an aging star.
 - Sleeper<->nflverse crosswalk goes BOTH ways: Sleeper's gsis_id is null for
   many real contributors, so available_players backfills player_id from
   players.sleeper_id. Never rely on one direction alone.

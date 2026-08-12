@@ -8,8 +8,9 @@ stats warehouse, so every number in an answer traces back to real data. See
 
 ## Status
 
-Phase 3 complete — stats warehouse (2023–2025), Sleeper league ingestion with
-format detection, and a league-aware scoring engine. No LLM calls yet.
+Phase 3b complete — stats warehouse (2023–2025), Sleeper league ingestion with
+format detection, a league-aware scoring engine, and format-aware valuation.
+No LLM calls yet.
 
 ## Setup
 
@@ -145,6 +146,54 @@ better-fitting one that cannot.
 `roster_positions` × team count. Superflex is visible in the output: QB
 replacement runs ~16–18 pts/gm against ~10–12 for RB/WR/TE, which is why a
 superflex slot moves QB value more than any other setting.
+
+## Valuation
+
+`get_valuation(ctx)` is the only entry point, and the only place format is
+branched on. Both strategies return the same shape: `PlayerValue` always carries
+**both** `win_now` and `future`, so the two numbers survive all the way to the
+response and the model can name the tradeoff instead of collapsing it.
+
+In redraft, `future` is 0 and picks are worth nothing — not ignored, just
+correctly zero. Dynasty adds discounted production over a 3-year horizon, bent
+by positional aging curves, plus picks as real assets.
+
+Same player, same data, different worth (from the two linked dynasty leagues,
+one marked `contend` and one `rebuild`):
+
+| Player | Age | win_now | future | Contender | Rebuilder |
+|---|---|---|---|---|---|
+| Christian McCaffrey | 29.2 | 58.8 | 0.0 | **47.1** | 11.8 |
+| Marvin Harrison Jr. | 23.1 | 14.7 | 108.2 | 33.4 | **89.5** |
+| Jonathan Taylor | 26.6 | 20.8 | 16.8 | 20.0 | 17.6 |
+
+The gate test trades the first for the second and asserts the verdict flips
+three ways: a loss in redraft (−44), a gain under dynasty+rebuild (+78), and a
+loss again under dynasty+contend (−14).
+
+Design notes worth knowing:
+
+- **Values are floored at zero.** Replacement level is what the waiver wire
+  gives away, so a player below it is worth nothing rather than being a
+  liability. Before flooring, a 31-year-old back scored −279 future and the
+  model would have recommended paying someone to take him.
+- **Intent is ignored in single-year formats.** Not merely because `future` is
+  0 there — applying the split anyway rescales `win_now` and makes the same
+  redraft player look four times better to a contender than a rebuilder.
+- **Aging curves are data, not logic** ([valuation/aging.py](src/advisor/valuation/aging.py)).
+  RBs fall off a cliff at 27–28, WRs plateau into their late twenties, TEs peak
+  late, QBs barely decline before 37.
+- **Discount rate (0.75/yr) is the main dial** between contend-leaning and
+  rebuild-leaning advice, deliberately a named constant.
+
+**Known limitation:** `future` ages a player's *current* production, so a young
+player already below replacement gets zero future value. That under-rates
+unproven breakout candidates, which matters most to a rebuilding team. Fixing it
+properly means modelling development upside — worth revisiting only once the
+evals in Phase 6 show it actually costs answers.
+
+**Careful:** `team_intent` is user-set and survives re-linking, but not deleting
+`data/advisor.duckdb`. A full warehouse rebuild loses it; re-run `set-intent`.
 
 **No fantasy points are stored anywhere.** Points depend on a league's scoring
 settings and are computed at query time in Phase 3. nflverse publishes
