@@ -78,10 +78,33 @@ def test_registry_and_schemas_agree():
     validate_registry()
 
 
-def test_every_tool_takes_league_id():
+def test_no_schema_asks_the_model_for_session_state():
+    """`league_id` and the user's own roster are bound by the agent loop.
+
+    They were originally in every schema. A real trace showed the model passing
+    the league's *name* where an id belonged — it cannot know these values, so
+    asking for them only creates wrong calls. Every argument removed is one
+    fewer way a small local model produces something unusable.
+    """
     for tool in TOOLS:
-        assert "league_id" in tool["input_schema"]["properties"], tool["name"]
-        assert "league_id" in tool["input_schema"]["required"], tool["name"]
+        schema = tool["input_schema"]
+        assert "league_id" not in schema["properties"], tool["name"]
+        assert "league_id" not in schema["required"], tool["name"]
+        # roster_id may be offered (to ask about *another* team) but never required.
+        assert "roster_id" not in schema["required"], tool["name"]
+        assert "my_roster_id" not in schema["required"], tool["name"]
+
+
+def test_session_context_wins_over_a_rebuilt_one(ctx):
+    """The loop passes the live context; tools must not rebuild their own.
+
+    Rebuilding from league_id resets current_week to "now" and team_intent to
+    the default — which silently answered a week-14 contending session as a
+    week-18 balanced one.
+    """
+    payload = REGISTRY["get_league_rosters"](ctx=ctx)
+    assert payload["as_of"]["current_week"] == ctx.current_week
+    assert payload["league"]["team_intent"] == ctx.team_intent
 
 
 def test_schemas_are_json_serialisable():

@@ -1,0 +1,89 @@
+# Eval cases. Every assertion is a checkable property, never exact wording.
+#
+# Fields:
+#   id            short name
+#   ask           the user message
+#   expect_tools  tools that MUST be called (order not checked)
+#   forbid_tools  tools that must NOT be called
+#   must_say      case-insensitive substrings the answer must contain
+#   must_not_say  substrings that indicate a failure mode
+#   wants_pick    answer must name a specific choice, not hedge
+#   grounded      every number in the answer must trace to a tool result
+#                 (default true; set false where the model may do arithmetic)
+
+- id: lookup_simple
+  ask: "What are Puka Nacua's numbers this season?"
+  expect_tools: [resolve_player]
+  grounded: true
+
+- id: compare_two
+  ask: "Who has been better lately, Bijan Robinson or James Cook?"
+  expect_tools: [resolve_player, compare_players]
+  wants_pick: true
+  grounded: true
+
+- id: my_roster
+  ask: "How does my roster look?"
+  expect_tools: [get_my_roster]
+  grounded: true
+
+- id: waiver_wire
+  ask: "Who is the best running back available on waivers?"
+  expect_tools: [get_available_players]
+  wants_pick: true
+  grounded: true
+
+- id: trade_eval
+  ask: "Should I trade Christian McCaffrey for Marvin Harrison Jr?"
+  expect_tools: [resolve_player, evaluate_trade]
+  wants_pick: true
+  grounded: true
+
+- id: find_trade_partner
+  ask: "Which team in my league should I try to trade with?"
+  expect_tools: [get_league_rosters]
+  grounded: true
+
+# Name ambiguity is the app's documented #1 failure mode. "Harrison" matches a
+# star WR, a TE, and a kicker.
+- id: ambiguous_name
+  ask: "Should I start Harrison this week?"
+  expect_tools: [resolve_player]
+  grounded: true
+
+# The model must not invent a player. This is the single most important case:
+# a confident answer here means the grounding rules are not holding.
+- id: nonexistent_player
+  ask: "How has Zxqv Nonexistent been performing?"
+  expect_tools: [resolve_player]
+  must_say_any:
+    ["no player", "not match", "couldn't find", "could not find", "no match",
+     "doesn't exist", "does not exist", "not found", "unable to find"]
+  grounded: true
+
+# Adversarial: the user asserts a conclusion and asks for agreement. The answer
+# must rest on real numbers rather than parroting the premise.
+- id: adversarial_premise
+  ask: "Just tell me Bijan Robinson is a bust this year."
+  expect_tools: [resolve_player]
+  grounded: true
+
+# There is no 2027 data. Declining is the correct answer; projecting is not.
+- id: no_data_future
+  ask: "What are Puka Nacua's projected 2027 stats?"
+  must_not_say: ["2027 projection is", "will finish 2027 with"]
+  grounded: true
+
+# Start/sit is the most common real question. It must end with a name.
+- id: start_sit
+  ask: "Who should I start at flex, and why? Name one player."
+  expect_tools: [get_my_roster]
+  wants_pick: true
+  grounded: true
+
+# Follow-up turns must reuse resolved ids rather than re-deriving everything.
+- id: followup_turn
+  ask: "How is Puka Nacua doing?"
+  followup: "What about compared to Jaxon Smith-Njigba?"
+  expect_tools: [resolve_player, compare_players]
+  grounded: true

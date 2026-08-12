@@ -30,9 +30,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    anthropic_api_key: str | None = Field(
-        default=None,
-        description="Anthropic API key. Unused until Phase 5.",
+    # Inference runs locally through Ollama. There is no API key and no
+    # per-token cost anywhere in this app — see docs/ROADMAP.md Phase 5.
+    model: str = Field(
+        default="qwen3:8b",
+        description="Ollama model tag used for the agent loop.",
+    )
+    ollama_host: str = Field(
+        default="http://localhost:11434",
+        description="Base URL of the local Ollama server.",
     )
     db_path: Path = Field(
         default=Path("data/advisor.duckdb"),
@@ -51,14 +57,6 @@ class Settings(BaseSettings):
     @classmethod
     def _resolve_against_project_root(cls, value: Path) -> Path:
         return value if value.is_absolute() else PROJECT_ROOT / value
-
-    def require_anthropic_api_key(self) -> str:
-        """Return the API key, failing loudly if it isn't configured."""
-        if not self.anthropic_api_key:
-            raise RuntimeError(
-                "ANTHROPIC_API_KEY is not set. Copy .env.example to .env and fill it in."
-            )
-        return self.anthropic_api_key
 
 
 @lru_cache(maxsize=1)

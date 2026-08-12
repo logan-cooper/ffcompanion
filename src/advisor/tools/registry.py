@@ -4,61 +4,108 @@ The `description` fields are prompt engineering, not documentation. They are the
 only instructions the model gets about *when* to reach for a tool, so they say
 what the tool is for and what it will not do, in the order the model needs it.
 
-Every callable takes `league_id` and builds its own `LeagueContext`, so the
-agent loop never has to thread context through.
+Callables take the session's `LeagueContext` (supplied by the agent loop) or a
+`league_id` to build one from. `league_id` and the user's own `roster_id` are
+kept out of the schemas entirely — see the note below.
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
-from advisor.context import load_context
+from advisor.context import LeagueContext, load_context
 from advisor.tools.compare import MAX_PLAYERS, MAX_WEEKS, compare_players
 from advisor.tools.players import resolve_player
 from advisor.tools.rosters import get_league_rosters, get_my_roster
 from advisor.tools.trade import evaluate_trade
 from advisor.tools.waivers import MAX_LIMIT, get_available_players
 
-LEAGUE_ID_SCHEMA = {
-    "type": "string",
-    "description": "The league to answer for. Required on every tool.",
-}
+# `league_id` and the user's own `roster_id` are deliberately NOT in any schema.
+# They are session state the agent loop binds for every call. Asking the model
+# to supply them meant it guessed — a real trace had it pass the league's *name*
+# where an id belonged — and every required argument is another way a small
+# local model produces an unusable call.
 
 
-def _resolve_player(league_id: str, query: str, **_: Any) -> dict:
-    return resolve_player(query, load_context(league_id))
+def _session(
+    ctx: LeagueContext | None,
+    league_id: str | None,
+    roster_id: int | None = None,
+) -> LeagueContext:
+    """Resolve the context a tool should answer for.
+
+    A caller-supplied `ctx` always wins. The agent loop passes the session's
+    context so the week, roster, and team intent the user actually set survive
+    into every tool response — rebuilding from `league_id` here would silently
+    reset `current_week` to "now" and `team_intent` to the default, which is how
+    a session set to week 14 / contend ended up being answered as week 18 /
+    balanced.
+
+    The `league_id` path remains for direct callers (tests, `tools-demo`).
+    """
+    if ctx is not None:
+        return ctx
+    if not league_id:
+        raise ValueError("pass either ctx or league_id")
+    return load_context(league_id, roster_id=roster_id)
 
 
-def _get_my_roster(league_id: str, roster_id: int, **_: Any) -> dict:
-    return get_my_roster(load_context(league_id, roster_id=roster_id), roster_id)
+def _resolve_player(
+    query: str, league_id: str | None = None, ctx: LeagueContext | None = None, **_: Any
+) -> dict:
+    return resolve_player(query, _session(ctx, league_id))
 
 
-def _get_league_rosters(league_id: str, **_: Any) -> dict:
-    return get_league_rosters(load_context(league_id))
+def _get_my_roster(
+    roster_id: int | None = None,
+    league_id: str | None = None,
+    ctx: LeagueContext | None = None,
+    **_: Any,
+) -> dict:
+    session = _session(ctx, league_id, roster_id=roster_id)
+    # The user's own roster is session state, not something the model should
+    # have to recall — fall back to it when the call omits one.
+    return get_my_roster(session, roster_id if roster_id is not None else session.roster_id)
+
+
+def _get_league_rosters(
+    league_id: str | None = None, ctx: LeagueContext | None = None, **_: Any
+) -> dict:
+    return get_league_rosters(_session(ctx, league_id))
 
 
 def _compare_players(
-    league_id: str, player_ids: list[str], weeks: int = MAX_WEEKS, **_: Any
+    player_ids: list[str],
+    weeks: int = MAX_WEEKS,
+    league_id: str | None = None,
+    ctx: LeagueContext | None = None,
+    **_: Any,
 ) -> dict:
-    return compare_players(load_context(league_id), player_ids, weeks=weeks)
+    return compare_players(_session(ctx, league_id), player_ids, weeks=weeks)
 
 
 def _get_available_players(
-    league_id: str, position: str | None = None, limit: int = MAX_LIMIT, **_: Any
+    position: str | None = None,
+    limit: int = MAX_LIMIT,
+    league_id: str | None = None,
+    ctx: LeagueContext | None = None,
+    **_: Any,
 ) -> dict:
-    return get_available_players(load_context(league_id), position, limit=limit)
+    return get_available_players(_session(ctx, league_id), position, limit=limit)
 
 
 def _evaluate_trade(
-    league_id: str,
-    my_roster_id: int,
     i_give: list[str],
     i_get: list[str],
+    my_roster_id: int | None = None,
     their_roster_id: int | None = None,
+    league_id: str | None = None,
+    ctx: LeagueContext | None = None,
     **_: Any,
 ) -> dict:
-    ctx = load_context(league_id, roster_id=my_roster_id)
-    return evaluate_trade(ctx, my_roster_id, their_roster_id, i_give, i_get)
+    session = _session(ctx, league_id, roster_id=my_roster_id)
+    mine = my_roster_id if my_roster_id is not None else session.roster_id
+    return evaluate_trade(session, mine, their_roster_id, i_give, i_get)
 
 
 REGISTRY: dict[str, Callable[..., dict]] = {
@@ -88,7 +135,6 @@ TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "league_id": LEAGUE_ID_SCHEMA,
                 "query": {
                     "type": "string",
                     "description": (
@@ -97,7 +143,7 @@ TOOLS: list[dict] = [
                     ),
                 },
             },
-            "required": ["league_id", "query"],
+            "required": ["query"],
         },
     },
     {
@@ -115,13 +161,15 @@ TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "league_id": LEAGUE_ID_SCHEMA,
                 "roster_id": {
                     "type": "integer",
-                    "description": "Which team. The user's own unless asked otherwise.",
+                    "description": (
+                        "Only when asking about ANOTHER team. Omit it for the "
+                        "user's own roster."
+                    ),
                 },
             },
-            "required": ["league_id", "roster_id"],
+            "required": [],
         },
     },
     {
@@ -138,8 +186,8 @@ TOOLS: list[dict] = [
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"league_id": LEAGUE_ID_SCHEMA},
-            "required": ["league_id"],
+            "properties": {},
+            "required": [],
         },
     },
     {
@@ -159,7 +207,6 @@ TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "league_id": LEAGUE_ID_SCHEMA,
                 "player_ids": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -171,7 +218,7 @@ TOOLS: list[dict] = [
                     "description": f"Recent weeks to show, 1-{MAX_WEEKS}.",
                 },
             },
-            "required": ["league_id", "player_ids"],
+            "required": ["player_ids"],
         },
     },
     {
@@ -188,7 +235,6 @@ TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "league_id": LEAGUE_ID_SCHEMA,
                 "position": {
                     "type": "string",
                     "enum": ["QB", "RB", "WR", "TE", "K"],
@@ -199,7 +245,7 @@ TOOLS: list[dict] = [
                     "description": f"How many to return, up to {MAX_LIMIT}.",
                 },
             },
-            "required": ["league_id"],
+            "required": [],
         },
     },
     {
@@ -219,10 +265,9 @@ TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "league_id": LEAGUE_ID_SCHEMA,
                 "my_roster_id": {
                     "type": "integer",
-                    "description": "The user's roster_id.",
+                    "description": "Omit — defaults to the user's own roster.",
                 },
                 "their_roster_id": {
                     "type": "integer",
@@ -241,7 +286,7 @@ TOOLS: list[dict] = [
                     "description": "What the user receives, same format.",
                 },
             },
-            "required": ["league_id", "my_roster_id", "i_give", "i_get"],
+            "required": ["i_give", "i_get"],
         },
     },
 ]

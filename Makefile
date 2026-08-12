@@ -39,13 +39,11 @@ verify-scoring: ## Check scored points against what Sleeper actually recorded
 tools-demo: ## Print all six tools under both a dynasty and a redraft context
 	$(UV) run python -m advisor.cli tools-demo
 
-chat: ## Start the conversational REPL (Phase 5)
-	@echo "make chat lands in Phase 5 (agent loop)."
-	@exit 1
+chat: ## Conversational REPL, running locally at no cost
+	$(UV) run python -m advisor.cli chat
 
-eval: ## Run the eval suite (Phase 6)
-	@echo "make eval lands in Phase 6 (eval harness)."
-	@exit 1
+eval: ## Run the eval suite — how you choose a model. make eval MODEL=qwen3:8b
+	$(UV) run python -m advisor.cli eval $(if $(MODEL),--model $(MODEL),)
 
 clean: ## Remove the local database, caches, and build artifacts
 	rm -rf data/advisor.duckdb data/cache .pytest_cache
