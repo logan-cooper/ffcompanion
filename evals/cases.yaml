@@ -108,6 +108,20 @@
   wants_pick: true
   grounded: true
   max_seconds: 240
+  # Not an opinion — the app's own weights decide it, and they invert.
+  # This league's intent is rebuild (0.20 win_now / 0.80 future):
+  #   dynasty  McCaffrey 101.82 vs McMillan 108.28 -> accept, by 6.46
+  #   redraft  future is 0, so win-now only: 53.2 vs 15.4 -> decline, easily
+  # Asserting both is the strongest test of Phase 3b there is: two answers can
+  # differ from each other and still both be wrong.
+  correct_answer_by_format:
+    dynasty:
+      summary: "accept — rebuild weights future, and McMillan wins on it"
+      any_of: ["make the trade", "accept", "do it", "worth it", "yes"]
+      none_of: ["keep mccaffrey", "avoid the trade", "don't trade", "decline"]
+    redraft:
+      summary: "decline — no future to price, McCaffrey wins on win-now"
+      any_of: ["keep mccaffrey", "decline", "don't", "do not", "not advisable", "no"]
 
 # Redraft must never price a rookie's future, because there is no future in it.
 - id: young_player_hold_paired

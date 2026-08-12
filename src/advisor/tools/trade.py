@@ -181,13 +181,14 @@ def evaluate_trade(
             "team": teams.get(my_roster_id, "?"),
             "i_give": my_side,
             "i_get": their_side,
-            # Positive means this side gains. Both figures are reported
-            # unweighted; `intent_weighted` is one way to read them, not the
-            # answer.
-            "win_now_delta": win_now_delta,
-            "future_delta": future_delta,
+            # Positive means this side gains. The weighted figure comes FIRST:
+            # a small model reads in order and combines whatever it meets first,
+            # and it cannot do the intent weighting reliably in its head.
             "intent_weighted_delta": weighted.combined,
             "weighting": weighted.explain(),
+            # Kept alongside, unweighted, so the tradeoff can still be stated.
+            "win_now_delta": win_now_delta,
+            "future_delta": future_delta,
         },
         "their_roster": {
             "roster_id": their_roster_id,
@@ -196,9 +197,17 @@ def evaluate_trade(
             "win_now_delta": -win_now_delta,
             "future_delta": -future_delta,
         },
+        # Points at the arithmetic already done rather than asking for it again.
+        # The old wording ("weigh win-now against future...") told the model to
+        # combine the two deltas itself, in the same payload that already
+        # contains them combined — so it compared raw magnitudes, saw -37.8
+        # against +17.5, and declined a trade its own weighted figure scored at
+        # +6.46. Still no verdict: this names the number, not the decision.
         "no_verdict": (
-            "numbers only — weigh win-now against future using the league "
-            "format and team intent above"
+            "numbers only — the decision is yours. `intent_weighted_delta` "
+            "already combines win-now and future for this team's intent: "
+            "positive favours you, negative favours them. Do not re-weigh the "
+            "two deltas yourself; state the tradeoff they show, then decide."
         ),
     }
 

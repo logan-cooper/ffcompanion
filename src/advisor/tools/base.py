@@ -18,6 +18,7 @@ from typing import Any
 
 from advisor.context import LeagueContext
 from advisor.db import query
+from advisor.league_format import MULTI_YEAR_FORMATS
 from advisor.scoring.engine import score_stat_line
 
 # Roughly 1500 tokens. Tools truncate rather than blow the model's context, and
@@ -50,6 +51,7 @@ def envelope(ctx: LeagueContext) -> dict:
             "superflex": ctx.superflex,
             "team_intent": ctx.team_intent,
             "teams": ctx.total_rosters,
+            **_intent_caveat(ctx),
         },
         "as_of": {
             "season": ctx.season,
@@ -63,6 +65,28 @@ def envelope(ctx: LeagueContext) -> dict:
             "data_as_of": data_as_of(ctx),
             **_win_now_caveat(ctx),
         },
+    }
+
+
+def _intent_caveat(ctx: LeagueContext) -> dict:
+    """Explain an intent that is carried but does not apply.
+
+    Contending and rebuilding are multi-year ideas: in a single-year format the
+    intent weights are (1.0, 0.0), so intent changes no number this tool
+    returns. The envelope still carries it — every response carries the same
+    keys on purpose — but unlabelled, a model reads `team_intent: rebuild` and
+    reasons from it, which produced a redraft answer arguing from "since your
+    team is rebuilding". Same principle as the win_now caveat below: a value
+    that cannot mean what it appears to mean has to say so.
+    """
+    if ctx.format in MULTI_YEAR_FORMATS:
+        return {}
+    return {
+        "team_intent_does_not_apply": (
+            f"{ctx.format} is a single-year format, so contending and rebuilding "
+            "are the same thing: only rest-of-season production matters. Do not "
+            "reason from team_intent here."
+        )
     }
 
 

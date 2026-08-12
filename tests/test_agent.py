@@ -491,6 +491,45 @@ def test_hitting_the_iteration_cap_fails():
     assert not check({"id": "x", "ask": "?", "grounded": False}, turn, []).passed
 
 
+# -------------------------------------------------------- known-correct answers
+
+_TRADE_CASE = {
+    "id": "x",
+    "ask": "?",
+    "grounded": False,
+    "correct_answer": {
+        "summary": "make the trade",
+        "any_of": ["make the trade", "accept", "do it", "trade him"],
+        "none_of": ["keep mccaffrey", "avoid the trade", "decline"],
+    },
+}
+
+
+def test_a_wrong_conclusion_fails_even_when_well_argued():
+    """The real failure: it said "prioritise future value", noted the trade
+    raised future by 17.53, then advised against it. Every other assertion
+    passed."""
+    wrong = check(
+        _TRADE_CASE,
+        _turn(
+            "This raises your future value by 17.53. Since you're rebuilding, "
+            "prioritize future value. Keep McCaffrey and avoid the trade."
+        ),
+        [],
+    )
+    assert not wrong.passed
+    assert any("wrong answer" in f for f in wrong.failures)
+
+
+def test_the_right_conclusion_passes_in_any_wording():
+    for phrasing in ("Make the trade.", "I'd accept this one.", "Trade him."):
+        assert check(_TRADE_CASE, _turn(phrasing), []).passed, phrasing
+
+
+def test_cases_without_a_known_answer_are_unaffected():
+    assert check({"id": "x", "ask": "?", "grounded": False}, _turn("Anything."), []).passed
+
+
 # ------------------------------------------------------------- format pairing
 
 def _paired(dynasty_text: str, redraft_text: str, redraft_corpus: str = '{"future": 0.0}'):
@@ -522,6 +561,25 @@ def test_a_single_year_format_must_price_no_future():
     leaked = _paired("Hold.", "Trade.", redraft_corpus='{"future": 108.7}')
     failures = _paired_format_failures(case, leaked)
     assert any("future=108.7" in f for f in failures)
+
+
+def test_a_verdict_that_fails_to_invert_is_caught():
+    """Two answers can differ from each other and both be wrong. This league's
+    own weights say accept in dynasty and decline in redraft."""
+    case = {
+        "id": "x",
+        "correct_answer_by_format": {
+            "dynasty": {"summary": "accept", "any_of": ["accept", "make the trade"]},
+            "redraft": {"summary": "decline", "any_of": ["decline", "keep"]},
+        },
+    }
+    backwards = _paired("Decline, keep McCaffrey.", "Accept, make the trade.")
+    failures = _paired_format_failures(case, backwards)
+    assert any("dynasty: wrong answer" in f for f in failures)
+    assert any("redraft: wrong answer" in f for f in failures)
+
+    correct = _paired("Accept — make the trade.", "Decline, keep McCaffrey.")
+    assert _paired_format_failures(case, correct) == []
 
 
 def test_multi_year_formats_are_allowed_a_future():

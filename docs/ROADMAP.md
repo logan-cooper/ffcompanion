@@ -767,6 +767,60 @@ this architecture, whatever its benchmark scores say.
 Re-run any of this with `make eval-compare MODELS=...`; finished models are
 reused from `evals/results/` unless you pass `--fresh`.
 
+### Format pairing, and a wrong answer that passed everything (2026-08-12)
+
+Cases can declare `paired_formats: [dynasty, redraft]`. The runner asks the same
+question under each, varying ONLY `format` via `dataclasses.replace` — holding
+roster, scoring, week and player pool fixed, so a difference is attributable to
+format and nothing else. A second real league would vary all of them at once and
+prove nothing.
+
+Format branching works end to end, proven with numbers:
+
+```
+dynasty  tools returned future 113.97 / 131.5  -> "...intent-weighted net gain
+         of +6.46 for your rebuild-focused team. Go ahead with the trade."
+redraft  tools returned future 0.0             -> "...decrease your win-now
+         value by 37.8 points. Do not trade."
+```
+
+**But `expects_different_answer` is not enough on its own — two answers can
+differ from each other and both be wrong.** The first paired run passed every
+assertion in the suite while concluding the opposite of its own reasoning:
+"prioritise future value", having just noted the trade *raised* future by 17.53,
+then "Keep McCaffrey and avoid the trade". So cases now carry
+`correct_answer_by_format`, and the right answer is not an opinion — the app's
+own weights decide it, and they invert:
+
+```
+rebuild intent = 0.20 win_now / 0.80 future
+  dynasty  McCaffrey 101.82  vs  McMillan 108.28  -> accept
+  redraft  future is 0, so win-now only: 53.2 vs 15.4 -> decline
+```
+
+**The cause was a tool telling the model to do the wrong thing.** `evaluate_trade`
+already returned `intent_weighted_delta: 6.46`, and its `no_verdict` field said
+"weigh win-now against future using the league format and team intent above" —
+instructing the model to redo, by hand, arithmetic already in the same payload.
+It compared raw magnitudes (-37.8 against +17.5), and declined. Three fixes, only
+one of them a prompt change:
+
+1. `no_verdict` now points at the number instead of asking for it again.
+2. The weighted figure comes FIRST in the payload; a small model combines
+   whatever it meets first.
+3. Prompt rule: *when a tool gives you a combined or weighted number, decide with
+   that number; do not re-derive it from the parts.* That is a statement about
+   this architecture, not a patch for one case.
+
+**Intent leaked through the envelope.** Every tool response carries `team_intent`
+by design, so a redraft answer argued "since your team is rebuilding" — meaningless
+where the weights are (1.0, 0.0). The envelope now carries
+`team_intent_does_not_apply` for single-year formats, matching the existing
+`_win_now_caveat` pattern. Partial fix: the model stopped *concluding* from it,
+but still mentions it.
+
+Result: **14/14, 100% grounding, 6.7 min.**
+
 ### Thinking is OFF, and that was measured (2026-08-12)
 
 qwen3:8b is a reasoning model. Same prompt, same seed, same league:

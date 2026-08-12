@@ -140,6 +140,20 @@ def _tool_corpus(messages: list[dict[str, Any]]) -> str:
     return "\n".join(m.get("content", "") for m in messages if m.get("role") == "tool")
 
 
+def _says(answer: str, expected: dict) -> bool:
+    """Is the model's conclusion the one we know to be right?
+
+    Written as `any_of` / `none_of` phrase groups rather than one exact string,
+    because there are many ways to say "make this trade" and testing for one of
+    them tests phrasing again. The point is the verdict, not the sentence.
+    """
+    lowered = answer.lower()
+    if any(p.lower() in lowered for p in expected.get("none_of", [])):
+        return False
+    wanted = expected.get("any_of", [])
+    return not wanted or any(p.lower() in lowered for p in wanted)
+
+
 def _recommendation_failures(answer: str, corpus: str) -> list[str]:
     """Did the model actually choose something?
 
@@ -215,6 +229,15 @@ def check(case: dict, turn: Turn, messages: list[dict]) -> CaseResult:
 
     if case.get("wants_pick"):
         result.failures.extend(_recommendation_failures(answer, _tool_corpus(messages)))
+
+    # A known-correct answer. Most assertions here check that the model behaved
+    # sensibly; this one checks that it was RIGHT. It exists because a paired
+    # trade case passed every other check while concluding the opposite of its
+    # own reasoning — "prioritise future value", then declining a trade that
+    # raised future value by 17.53.
+    expected = case.get("correct_answer")
+    if expected and not _says(answer, expected):
+        result.failures.append(f"wrong answer: expected {expected['summary']!r}")
 
     if not answer.strip():
         result.failures.append("empty answer")
@@ -319,6 +342,17 @@ def _paired_format_failures(
             if float(match.group(1)) != 0.0:
                 failures.append(f"{fmt}: tool returned future={match.group(1)}, must be 0")
                 break
+
+    # The strongest assertion available: the right verdict INVERTS between
+    # formats, and we know which way round because the app's own weights say so.
+    # A model can produce two different-sounding answers that are both wrong;
+    # this is what catches that.
+    for fmt, expected in (case.get("correct_answer_by_format") or {}).items():
+        turn, _ = runs.get(fmt, (None, None))
+        if turn is None:
+            continue
+        if not _says(turn.text or "", expected):
+            failures.append(f"{fmt}: wrong answer, expected {expected['summary']!r}")
 
     return failures
 
