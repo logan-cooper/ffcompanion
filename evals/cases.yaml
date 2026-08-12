@@ -131,3 +131,52 @@
   expects_different_answer: true
   grounded: true
   max_seconds: 240
+
+# ------------------------------------------------------------- season phase
+# Phase 3c's premise is that the same question is answered differently in March
+# than in December — off a prior-season baseline rather than this season's games.
+# Season phase derives from current_week, so moving the week exercises every
+# branch without waiting for the calendar. Week 0 is the offseason, which is
+# where dynasty leagues actually trade hardest and where nothing was tested.
+
+- id: offseason_vs_midseason_paired
+  ask: "How good is Puka Nacua?"
+  expect_tools: [resolve_player]
+  paired_weeks: [0, 14]
+  expects_different_answer: true
+  grounded: true
+  max_seconds: 240
+
+# With no games left win_now is 0 for EVERY player by arithmetic. Unlabelled,
+# that reads as a verdict — the envelope's caveat exists to stop exactly this.
+- id: season_over_zero_is_not_a_verdict
+  ask: "Is Puka Nacua still worth rostering?"
+  expect_tools: [resolve_player]
+  paired_weeks: [18]
+  grounded: true
+  must_not_say: ["worthless", "no value"]
+  max_seconds: 180
+
+# Early-season answers rest mostly on last year, and should say so rather than
+# stating a week-2 read with December confidence.
+- id: early_season_small_sample
+  ask: "Should I be worried about Puka Nacua's start?"
+  expect_tools: [resolve_player]
+  paired_weeks: [2]
+  grounded: true
+  max_seconds: 180
+
+# Known gap, deliberately left failing-or-not rather than fixed by eye.
+# compare_players returns win_now and future separately with no weighted
+# combination, so the model weighs them itself and has been seen to invert it:
+# "Given the league's rebuild intent, his win-now value is more critical" is
+# backwards for a rebuild. Adding a weighted field to compare_players was tried
+# and REGRESSED the paired trade case, so the fix is not that. This case exists
+# so the next attempt is measured instead of eyeballed.
+- id: intent_direction_on_compare
+  ask: "Between Puka Nacua and Ashton Jeanty, who is more valuable to my team?"
+  expect_tools: [resolve_player, compare_players]
+  wants_pick: true
+  grounded: true
+  must_not_say: ["win-now value is more critical", "win-now is more critical"]
+  max_seconds: 180

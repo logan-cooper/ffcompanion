@@ -6,6 +6,7 @@ from advisor.context import LeagueContext
 from advisor.db import query
 from advisor.tools.base import envelope, error, owner_of, player_index, league_owners
 from advisor.valuation import get_valuation
+from advisor.valuation.intent import weigh
 
 MAX_PLAYERS = 4
 MAX_WEEKS = 8
@@ -107,6 +108,7 @@ def compare_players(
     for player_id in found:
         line = index[player_id]
         value = valuation.player_value(player_id, ctx)
+        weighted = weigh(value.win_now, value.future, ctx)
         recent = line.weekly[-weeks:]
 
         entry = {
@@ -119,6 +121,13 @@ def compare_players(
             "points_per_game": line.points_per_game,
             "last3_points_per_game": line.last3_points_per_game,
             "weekly_points": [{"week": w, "points": p} for w, p in recent],
+            # NO intent_weighted_value here, deliberately. Adding one — by
+            # symmetry with evaluate_trade — regressed the paired trade case
+            # from three straight passes to a fail: the model met a per-player
+            # weighted value and a trade delta in the same turn, and fell back
+            # to raw deltas. evaluate_trade already answers "is this trade
+            # good"; a second weighted figure competes with it rather than
+            # helping. See docs/ROADMAP.md Phase 6.
             "win_now": value.win_now,
             "future": value.future,
         }

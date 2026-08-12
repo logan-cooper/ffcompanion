@@ -294,24 +294,81 @@ def _as_format(ctx: LeagueContext, fmt: str) -> LeagueContext:
     return dataclasses.replace(ctx, format=fmt, name=f"{ctx.name} (as {fmt})")
 
 
+def _at_week(ctx: LeagueContext, week: int) -> LeagueContext:
+    """The same league at a different point in the year.
+
+    Season phase is derived from current_week — 0 is the offseason, 18+ is a
+    finished season — so moving the week is enough to exercise every branch of
+    Phase 3c without waiting for the calendar. This matters more than it sounds:
+    dynasty leagues trade hardest Feb-Aug, when the season being valued has zero
+    games played, and that path is otherwise never tested.
+    """
+    return dataclasses.replace(ctx, current_week=week, name=f"{ctx.name} (week {week})")
+
+
+def _variants(ctx: LeagueContext, case: dict) -> dict[str, LeagueContext] | None:
+    """The context variants a paired case asks for, keyed by label."""
+    if formats := case.get("paired_formats"):
+        return {fmt: _as_format(ctx, fmt) for fmt in formats}
+    if weeks := case.get("paired_weeks"):
+        return {f"week{w}": _at_week(ctx, w) for w in weeks}
+    return None
+
+
 def run_case(backend: Backend, ctx: LeagueContext, case: dict) -> CaseResult:
-    formats = case.get("paired_formats")
-    if not formats:
+    variants = _variants(ctx, case)
+    if not variants:
         turn, messages = _ask(backend, ctx, case)
         return check(case, turn, messages)
 
-    # Ask the identical question under each format and compare.
-    runs: dict[str, tuple[Turn, list[dict]]] = {
-        fmt: _ask(backend, _as_format(ctx, fmt), case) for fmt in formats
-    }
+    # Ask the identical question under each variant and compare.
+    runs = {label: _ask(backend, variant, case) for label, variant in variants.items()}
 
-    primary = formats[0]
+    primary = next(iter(runs))
     turn, messages = runs[primary]
     result = check(case, turn, messages)
     result.seconds = sum(t.elapsed_seconds for t, _ in runs.values())
     result.failures.extend(_paired_format_failures(case, runs))
+    result.failures.extend(_paired_week_failures(case, runs))
     result.passed = not result.failures
     return result
+
+
+def _paired_week_failures(
+    case: dict, runs: dict[str, tuple[Turn, list[dict]]]
+) -> list[str]:
+    """Check that where we are in the year reached the answer.
+
+    Phase 3c's premise is that the same question is answered differently in
+    March than in December — off a prior-season baseline rather than this
+    season's games. Nothing verified that through the agent.
+    """
+    if not case.get("paired_weeks"):
+        return []
+
+    failures = []
+    for label, (turn, messages) in runs.items():
+        answer = (turn.text or "").lower()
+        corpus = _tool_corpus(messages)
+
+        # With no games left win_now is zero for EVERYONE by arithmetic. A model
+        # reading that as a verdict on a player is the exact failure the
+        # envelope's win_now caveat exists to prevent.
+        if '"win_now": 0' in corpus or '"win_now": 0.0' in corpus:
+            for slur in ("worthless", "no value", "has no value", "zero value"):
+                if slur in answer:
+                    failures.append(f"{label}: read win_now=0 as a verdict ({slur!r})")
+                    break
+
+        # In the offseason every number is last season's, aged forward. Passing
+        # it off as this season's is the misread that matters.
+        offseason = re.search(r'"season_started":\s*false', corpus)
+        if offseason and any(
+            p in answer for p in ("this season he", "so far this season", "this year he")
+        ):
+            failures.append(f"{label}: presented prior-season stats as current")
+
+    return failures
 
 
 def _paired_format_failures(
@@ -323,7 +380,15 @@ def _paired_format_failures(
     dynasty answer and a redraft answer to the same question differ; if they come
     back identical, something upstream collapsed and every other case would still
     look fine.
+
+    Only for format-paired cases. Without this guard the labels of a WEEK-paired
+    case ("week0", "week14") are read as format names, none of them match a
+    multi-year format, and a dynasty league gets failed for the future values it
+    is supposed to have.
     """
+    if not case.get("paired_formats"):
+        return []
+
     failures = []
 
     # Each format must produce its own answer, not one answer twice.

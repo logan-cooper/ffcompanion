@@ -767,6 +767,48 @@ this architecture, whatever its benchmark scores say.
 Re-run any of this with `make eval-compare MODELS=...`; finished models are
 reused from `evals/results/` unless you pass `--fresh`.
 
+### Season phase, and a regression I caused by fixing what wasn't broken (2026-08-12)
+
+Pairing generalised: cases can declare `paired_weeks: [0, 14]` as well as
+`paired_formats`. Season phase derives entirely from `current_week`, so moving
+the week exercises every Phase 3c branch without waiting for the calendar —
+including the offseason, where dynasty leagues actually trade hardest and which
+nothing had ever tested.
+
+Phase 3c works, now confirmed rather than assumed:
+
+- **Week 2** — *"Given the small sample size and the fact that these numbers are
+  anchored to 2024, it's too early to be overly concerned."* The shrinkage
+  reaches the user as stated uncertainty rather than a confident week-2 read.
+- **Week 18** — `_win_now_caveat` earns its place. Shown `win_now: 0` for an
+  elite receiver, the model does not call him worthless. That was defensive code
+  nobody had verified.
+
+**A harness bug first:** `_paired_format_failures` ran on week-paired cases and
+read the label `week0` as a format name. None of the week labels is a multi-year
+format, so a dynasty league was failed for having exactly the future values it
+should have. Guarded. That is the eighth measurement bug of the day and they all
+share a shape — **asserting on a label rather than on what the label denotes**.
+
+**Then a regression that was entirely mine.** Reading the offseason answer, I
+noticed *"Given the league's rebuild intent, his win-now value is more
+critical"* — backwards for a rebuild. So I gave `compare_players` an
+`intent_weighted_value`, by symmetry with `evaluate_trade`. It regressed
+`age_for_production_paired` from three straight passes to a fail: the model met
+a per-player weighted value AND a trade delta in one turn, and fell back to raw
+deltas. Reverted, and the reason is recorded in the code so nobody re-adds it.
+
+**The symmetry is the trap.** `evaluate_trade` already answers "is this trade
+good"; a second weighted figure competes with it rather than helping.
+
+The deeper mistake was method, not code: that change fixed an **observation**,
+not a failing case. Three of the four regressions today came from editing
+without a failing test in front of me. So the gap is now a case —
+`intent_direction_on_compare` — and the next attempt at it gets measured instead
+of eyeballed.
+
+**18/18, 100% grounding, 9.0 min.**
+
 ### Format pairing, and a wrong answer that passed everything (2026-08-12)
 
 Cases can declare `paired_formats: [dynasty, redraft]`. The runner asks the same

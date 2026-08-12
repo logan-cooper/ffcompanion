@@ -26,6 +26,7 @@ from advisor.evals.runner import (
     _is_grounded,
     _numbers,
     _paired_format_failures,
+    _paired_week_failures,
     check,
     load_cases,
     per_case_matrix,
@@ -542,14 +543,16 @@ def _paired(dynasty_text: str, redraft_text: str, redraft_corpus: str = '{"futur
 def test_identical_answers_across_formats_fail():
     """The whole point of Phase 3b. If dynasty and redraft answer the same, the
     format never reached the answer and every other case still looks fine."""
-    case = {"id": "x", "expects_different_answer": True}
+    case = {"id": "x", "paired_formats": ["dynasty", "redraft"],
+            "expects_different_answer": True}
     same = _paired("Trade him.", "Trade him.")
     failures = _paired_format_failures(case, same)
     assert any("identical answer" in f for f in failures)
 
 
 def test_differing_answers_across_formats_pass():
-    case = {"id": "x", "expects_different_answer": True}
+    case = {"id": "x", "paired_formats": ["dynasty", "redraft"],
+            "expects_different_answer": True}
     differing = _paired("Hold him for the future.", "Trade him, age is irrelevant.")
     assert _paired_format_failures(case, differing) == []
 
@@ -557,7 +560,7 @@ def test_differing_answers_across_formats_pass():
 def test_a_single_year_format_must_price_no_future():
     """future is zero in redraft by definition, so a non-zero one is wrong, not
     a judgement call."""
-    case = {"id": "x"}
+    case = {"id": "x", "paired_formats": ["dynasty", "redraft"]}
     leaked = _paired("Hold.", "Trade.", redraft_corpus='{"future": 108.7}')
     failures = _paired_format_failures(case, leaked)
     assert any("future=108.7" in f for f in failures)
@@ -568,6 +571,7 @@ def test_a_verdict_that_fails_to_invert_is_caught():
     own weights say accept in dynasty and decline in redraft."""
     case = {
         "id": "x",
+        "paired_formats": ["dynasty", "redraft"],
         "correct_answer_by_format": {
             "dynasty": {"summary": "accept", "any_of": ["accept", "make the trade"]},
             "redraft": {"summary": "decline", "any_of": ["decline", "keep"]},
@@ -582,8 +586,20 @@ def test_a_verdict_that_fails_to_invert_is_caught():
     assert _paired_format_failures(case, correct) == []
 
 
+def test_week_labels_are_not_mistaken_for_format_names():
+    """A week-paired case labels its runs "week0"/"week14". Read as formats,
+    none of them is multi-year, and a dynasty league gets failed for the future
+    values it is supposed to have."""
+    case = {"id": "x", "paired_weeks": [0, 14]}
+    runs = {
+        "week0": (_turn("a"), _tool_messages('{"future": 244.76}')),
+        "week14": (_turn("b"), _tool_messages('{"future": 300.38}')),
+    }
+    assert _paired_format_failures(case, runs) == []
+
+
 def test_multi_year_formats_are_allowed_a_future():
-    case = {"id": "x"}
+    case = {"id": "x", "paired_formats": ["dynasty", "redraft"]}
     assert _paired_format_failures(case, _paired("Hold.", "Trade.")) == []
 
 
@@ -602,6 +618,71 @@ def test_reinterpreting_a_league_changes_only_the_format():
     assert redraft.current_week == dynasty.current_week
     assert redraft.league_id == dynasty.league_id
     assert "redraft" in redraft.name
+
+
+# -------------------------------------------------------------- season phase
+
+def _weeks(**by_label):
+    return {
+        label: (_turn(text), _tool_messages(corpus))
+        for label, (text, corpus) in by_label.items()
+    }
+
+
+def test_reading_a_zero_win_now_as_a_verdict_fails():
+    """With no games left win_now is 0 for EVERYONE by arithmetic. Calling a
+    player worthless on that basis is the failure the envelope caveat exists
+    to prevent."""
+    case = {"id": "x", "paired_weeks": [18]}
+    runs = _weeks(week18=("He is worthless now.", '{"win_now": 0.0}'))
+    assert any("verdict" in f for f in _paired_week_failures(case, runs))
+
+
+def test_a_zero_win_now_described_correctly_passes():
+    case = {"id": "x", "paired_weeks": [18]}
+    runs = _weeks(
+        week18=(
+            "The season is over so nobody has rest-of-season value; judge him "
+            "on his 17 games instead.",
+            '{"win_now": 0.0}',
+        )
+    )
+    assert _paired_week_failures(case, runs) == []
+
+
+def test_offseason_stats_presented_as_current_fails():
+    """In the offseason every number is last season's, aged forward."""
+    case = {"id": "x", "paired_weeks": [0]}
+    runs = _weeks(
+        week0=("This season he has 1793 yards.", '{"season_started": false}')
+    )
+    assert any("as current" in f for f in _paired_week_failures(case, runs))
+
+
+def test_offseason_labelled_correctly_passes():
+    case = {"id": "x", "paired_weeks": [0]}
+    runs = _weeks(
+        week0=("Last season he had 1793 yards; 2026 has not started.",
+               '{"season_started": false}')
+    )
+    assert _paired_week_failures(case, runs) == []
+
+
+def test_week_variants_change_only_the_week():
+    from advisor.context import LeagueContext
+    from advisor.evals.runner import _at_week
+
+    base = LeagueContext(league_id="1", name="T", season=2025, format="dynasty",
+                         current_week=14)
+    off = _at_week(base, 0)
+
+    assert off.is_offseason and not base.is_offseason
+    assert off.format == base.format
+    assert off.league_id == base.league_id
+
+
+def test_non_week_cases_skip_the_week_checks():
+    assert _paired_week_failures({"id": "x"}, _weeks(a=("anything", "{}"))) == []
 
 
 # --------------------------------------------------------------- the case file
