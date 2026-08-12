@@ -62,6 +62,11 @@ class Settings(BaseSettings):
         default=None,
         description="Sleeper league id used when a command doesn't name one.",
     )
+    sleeper_username: str | None = Field(
+        default=None,
+        description="Your Sleeper username. Identifies which roster in a league "
+        "is yours, which nothing in the league data records on its own.",
+    )
 
     @field_validator("db_path", "cache_dir")
     @classmethod

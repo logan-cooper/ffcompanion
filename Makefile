@@ -8,12 +8,18 @@ SEASONS ?= $(SEASON)
 ALL_SEASONS ?= 2023,2024,2025
 
 .DEFAULT_GOAL := help
-.PHONY: help sync test ingest warehouse status link-league verify-scoring tools-demo chat eval eval-compare serve clean
+.PHONY: help setup refresh sync test ingest warehouse status link-league verify-scoring tools-demo chat eval eval-compare serve clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) \
 		| sort \
 		| awk -F':.*##' '{ printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2 }'
+
+setup: ## First run: Ollama, model, deps, warehouse, league — start here
+	@bash scripts/setup.sh
+
+refresh: ## Weekly: new stats + current rosters (Tuesdays, after MNF)
+	@bash scripts/refresh.sh
 
 sync: ## Install/refresh the virtualenv from the lockfile
 	$(UV) sync

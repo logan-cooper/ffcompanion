@@ -4,7 +4,7 @@
 Fantasy football AI advisor. Full plan: docs/ROADMAP.md — read it before
 starting any phase.
 
-**Status: Phases 5-7 complete** (warehouse 2023-2025, Sleeper leagues, scoring
+**Status: all phases complete (0-8)** (warehouse 2023-2025, Sleeper leagues, scoring
 engine, format-aware valuation, year-round validity, six-tool layer, local agent
 loop, eval harness, local web UI). **The model is qwen3:8b with thinking OFF** —
 18/18, 100% grounding, 9.0 min; evidence and runners-up in docs/ROADMAP.md
@@ -17,12 +17,13 @@ sometimes reasons backwards about rebuild intent on compare_players — a
 weighted field was tried there and REGRESSED the paired trade case, so do not
 re-add one by symmetry with evaluate_trade.
 
-Next: Phase 8, packaging. Don't skip ahead — each phase has a "Done when" test
-that gates the next one.
+`make setup` takes a fresh clone to a working answer; `make refresh` updates
+weekly. Verified by actually cloning and running it, which is how the last real
+bug was found.
 
 ## Stack
-Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
-(Phase 7+). The agent loop runs a LOCAL open-weights model via Ollama —
+Python 3.12, uv for deps, DuckDB (permanent — the Postgres migration was
+dropped with the local-first pivot), FastAPI for the local web UI. The agent loop runs a LOCAL open-weights model via Ollama —
 no API key, no per-token cost, anywhere in this project.
 
 ## Hard rules
@@ -54,6 +55,15 @@ no API key, no per-token cost, anywhere in this project.
   Always flush progress output, and send it to STDERR — progress on stdout means
   `eval --json > file` swallows every sign of life and a working run is
   indistinguishable from a hung one.
+- The user's roster_id resolves from team_intent first, then from who owns the
+  roster on Sleeper (league_rosters.owner_id -> league_users.user_id ->
+  display_name, matched against SLEEPER_USERNAME). A fresh install has no
+  team_intent rows, so without the fallback "how does my roster look?" is
+  answered with "give me your roster_id" — a question the user can't answer.
+- Test packaging changes against a FRESH CLONE, not this machine. Both Phase 8
+  bugs (no roster_id, and a username check that tested for the key rather than a
+  value) were invisible here because local state already supplied what was
+  missing.
 - The web layer binds to 127.0.0.1 and that is a product decision, not a
   limitation: serve other people from one machine and that machine's GPU is
   doing everyone's inference, which is the cost model this project pivoted away

@@ -84,8 +84,10 @@ type, and importing upward would invert the dependency. It lives in
 
 **Local database:** DuckDB. Single file, no daemon, reads nflverse Parquet
 natively, and excellent at the rolling-window analytical queries this app needs.
-All database access goes through a thin repository layer so Phase 8 can swap in
-Postgres without touching tool code.
+All database access goes through a thin repository layer, which keeps storage
+swappable and the tool layer ignorant of it. (The Postgres migration this was
+originally for is gone — local-first makes DuckDB permanent — but the
+discipline earns its keep anyway.)
 
 **External data sources:**
 - **Sleeper API** — `https://api.sleeper.app/v1/...`. Free, read-only, no auth
@@ -179,7 +181,9 @@ tradeoff instead of collapsing it into one score.
 - `config.py` loads from `.env` via `pydantic-settings`. No secrets in code.
 - `db.py` exposes `get_conn()` and `query(sql, params) -> list[dict]`. Every
   later phase uses only these two functions — no direct DuckDB imports anywhere
-  else. This is what makes Phase 8's Postgres swap a one-file change.
+  else. Originally this was to keep a Postgres swap cheap; that migration was
+  dropped with the pivot to local-first, and the rule stays because one place
+  that knows about storage is simply correct.
 
 **Done when:** `make test` runs an empty pytest suite green, and
 `python -m advisor.cli --version` prints a version.
@@ -1067,6 +1071,61 @@ problem, and deletes most of what it used to contain:
 **Done when:** a leaguemate on their own laptop can go from `git clone` to a
 working answer about their roster, and the total cost to everyone involved is
 $0.
+
+### Built (2026-08-12)
+
+`make setup` and `make refresh`, both idempotent, both `set -euo pipefail` so a
+failed step stops rather than reporting success over a half-built install.
+
+**Setup states the cost before spending it.** Size (~5.5GB, nearly all model),
+every step it will take, and a RAM check against the 16GB floor — all printed
+*before* the confirmation prompt, per this phase's own instruction. Below the
+floor it explains what will happen (swapping, minutes per answer) and suggests a
+smaller model rather than refusing.
+
+**Two bugs found by running the scripts rather than reading them:**
+
+1. *Setup was not idempotent.* Its "is a league already linked?" check grepped
+   `make status` output for the word "league", which that output never contains,
+   so a configured machine would be re-prompted every run. Both checks now query
+   the database. This is the same mistake as asserting on a label — parsing a
+   human-readable table is not a contract.
+2. *`make refresh` 404'd in the offseason.* It defaulted to `date +%Y`, but an
+   NFL season is named for the year it **starts** and opens in September, so in
+   August it asked nflverse for a 2026 file that does not exist and dumped a
+   stack trace. Now derives the season properly and, if a season genuinely has
+   no published stats yet, says so and leaves the warehouse alone.
+
+**The username is stored in `.env`, not inferred.** `league_users` lists every
+manager in a league and marks none of them as you, so `setup.sh` records
+`SLEEPER_USERNAME` after linking and `refresh.sh` reads it back.
+
+**The fresh-clone test found a bug nothing else could.** Run for real, an empty
+checkout answered *"How does my roster look?"* with **"I need your `roster_id`.
+Please provide it"** — a question the user cannot sensibly answer and one the
+loop exists to bind for them. Two causes, both invisible on a developed machine:
+
+1. `roster_id` came only from `team_intent`, which a fresh install has no rows
+   in. Sleeper already knows: `league_rosters.owner_id` joins to
+   `league_users.user_id`, whose `display_name` is the username. `_pick_league`
+   now falls back to the owned roster, fixing the CLI, the web UI and the gate
+   at once.
+2. It defaulted into the **survival** league, where persistent rosters do not
+   exist — so a newcomer would land where most of their questions do not apply.
+   Now deprioritised in the ordering.
+
+Neither could appear on the development machine, where a `team_intent` row had
+been supplying `roster_id` all along.
+
+**Gate met after the fix**: an empty checkout with no `.env` and no `data/`
+reaches a grounded answer about the right roster in the right league through
+`make setup` alone.
+
+`tests/test_packaging.py` asserts the properties a newcomer depends on — scripts
+parse, the size warning precedes the prompt, the hardware floor is stated, every
+`make` target is documented, and **no API key appears anywhere in `src/` or
+`scripts/`**. That last one is the claim the whole project rests on, so it is
+asserted rather than trusted.
 
 ---
 

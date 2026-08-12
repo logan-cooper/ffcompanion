@@ -349,22 +349,61 @@ CHAT_HELP = """commands:
 """
 
 
+def _owned_roster(league_id: str) -> int | None:
+    """Which roster in this league belongs to the configured user.
+
+    Sleeper already tells us: league_rosters.owner_id joins to
+    league_users.user_id, whose display_name is the username. Without this,
+    a fresh install has no team_intent rows, so roster_id came back None and
+    "how does my roster look?" was answered with "please provide your
+    roster_id" — a question the user cannot sensibly answer and the loop is
+    supposed to bind for them.
+    """
+    from advisor.config import get_settings
+    from advisor.db import query
+
+    username = (get_settings().sleeper_username or "").strip()
+    if not username:
+        return None
+
+    rows = query(
+        """
+        SELECT r.roster_id
+        FROM league_rosters r
+        JOIN league_users u
+          ON u.user_id = r.owner_id AND u.league_id = r.league_id
+        WHERE r.league_id = ? AND lower(u.display_name) = lower(?)
+        LIMIT 1
+        """,
+        [league_id, username],
+    )
+    return rows[0]["roster_id"] if rows else None
+
+
 def _pick_league(league_id: str | None) -> tuple[str, int | None]:
-    """Resolve which league and roster to open, preferring one with an intent set."""
+    """Resolve which league and roster to open.
+
+    Roster comes from team_intent when the user has set one — that is the
+    deliberate signal — and otherwise from who owns the roster on Sleeper.
+    """
     from advisor.db import query
 
     if league_id:
         rows = query(
             "SELECT roster_id FROM team_intent WHERE league_id = ? LIMIT 1", [league_id]
         )
-        return league_id, rows[0]["roster_id"] if rows else None
+        roster_id = rows[0]["roster_id"] if rows else None
+        return league_id, roster_id if roster_id is not None else _owned_roster(league_id)
 
     rows = query(
         """
         SELECT l.league_id, t.roster_id
         FROM leagues l
         LEFT JOIN team_intent t ON t.league_id = l.league_id
-        ORDER BY t.roster_id IS NULL, l.name
+        -- Prefer a league with an intent set, then one this app can actually
+        -- advise on: survival leagues have no persistent rosters, so opening in
+        -- one by default lands a new user somewhere most questions do not apply.
+        ORDER BY t.roster_id IS NULL, l.format = 'survival', l.name
         LIMIT 1
         """
     )
@@ -372,7 +411,10 @@ def _pick_league(league_id: str | None) -> tuple[str, int | None]:
         raise LookupError(
             "No leagues linked. Run: make link-league USERNAME=<you> SEASON=2025"
         )
-    return rows[0]["league_id"], rows[0]["roster_id"]
+
+    resolved = rows[0]["league_id"]
+    roster_id = rows[0]["roster_id"]
+    return resolved, roster_id if roster_id is not None else _owned_roster(resolved)
 
 
 def _cmd_chat(args: argparse.Namespace) -> int:

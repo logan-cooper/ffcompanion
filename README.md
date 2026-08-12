@@ -8,15 +8,49 @@ stats warehouse, so every number in an answer traces back to real data. See
 
 ## Status
 
-Phase 5 complete — stats warehouse (2023–2025), Sleeper league ingestion with
+All phases complete — stats warehouse (2023–2025), Sleeper league ingestion with
 format detection, a league-aware scoring engine, format-aware valuation,
-year-round validity, the six-tool layer, and a working chat agent.
+year-round validity, the six-tool layer, a local agent, an 18-case eval suite,
+and a local web UI.
+
+## Get started
+
+```sh
+git clone https://github.com/logan-cooper/ffcompanion && cd ffcompanion
+make setup      # installs Ollama, pulls the model, builds the warehouse, links your league
+make serve      # http://127.0.0.1:8000
+```
+
+`make setup` tells you what it will download **before** it starts, checks your
+RAM against the floor below, and is safe to re-run — every step checks before it
+acts. Roughly 5.5GB total, almost all of it the model.
+
+Then weekly, on Tuesday once Monday Night Football is final:
+
+```sh
+make refresh    # new stats + current rosters
+```
+
+Tuesday matters: nflverse finalises a week after MNF, so running this on a
+Monday gets you last week's numbers with this week's confidence — worse than not
+running it at all. `make refresh` warns if you run it early rather than refusing,
+since a Wednesday catch-up is perfectly reasonable.
+
+To automate it, `crontab -e` and add (10am Tuesday):
+
+```cron
+0 10 * * 2 cd /path/to/ffcompanion && /usr/bin/make refresh >> /tmp/ffcompanion-refresh.log 2>&1
+```
+
+The app works fine without this — it just answers off older data, and says so,
+because every tool response carries a `data_as_of` field.
 
 ## Runs entirely on your machine, for free
 
 There is **no API key in this project and no per-token cost**. The model runs
 locally through [Ollama](https://ollama.com), so a question costs $0 whether one
-person uses this or your whole league does.
+person uses this or your whole league does. A test asserts the absence of API
+keys, because it is the claim everything else rests on.
 
 That works because the model supplies no knowledge — only judgment. Every
 statistic comes from a tool that reads the local warehouse, and the system
@@ -25,12 +59,10 @@ formatting arguments, and writing prose over the results, which a 7–8B
 open-weights model does well. **Nothing here is trained or fine-tuned**; that
 would teach the model football facts it is explicitly not allowed to use.
 
-```sh
-brew install ollama          # or see ollama.com for Linux/Windows
-ollama serve                 # leave running
-ollama pull qwen3:8b         # ~5GB, once
-make chat
-```
+Everything is served on `127.0.0.1` and that is deliberate. The moment one
+machine serves the whole league, that machine's GPU does everyone's inference
+and somebody is paying for it — which is exactly the cost model this project
+exists to avoid. Each person runs their own copy.
 
 **Hardware:** ~16GB RAM is a realistic floor. A 7–8B model at 4-bit
 quantization is ~5GB on disk and ~6.5GB resident alongside the warehouse — that
@@ -75,14 +107,17 @@ Each model is saved to `evals/results/` as it finishes and reused on a re-run,
 so a comparison interrupted by closing the laptop resumes instead of starting
 over. `--fresh` re-runs everything.
 
-## Setup
+## Setup by hand
 
-Requires [uv](https://docs.astral.sh/uv/). Python 3.12 is installed by uv.
+`make setup` does all of this. If you would rather drive it yourself:
 
 ```sh
-brew install uv        # if you don't have it
-make sync              # create .venv and install dependencies
-cp .env.example .env   # then fill in values as later phases need them
+brew install uv                                 # if you don't have it
+make sync                                       # create .venv, install deps
+cp .env.example .env
+ollama pull qwen3:8b                            # ~5.2GB, once
+make warehouse                                  # 2023-2025, a few minutes
+make link-league USERNAME=<you> SEASON=2025
 make test
 ```
 
@@ -90,6 +125,9 @@ make test
 
 | Command | What it does |
 |---|---|
+| `make setup` | First run — Ollama, model, deps, warehouse, league |
+| `make refresh` | Weekly — new stats and current rosters |
+| `make serve` | Local web UI at http://127.0.0.1:8000 |
 | `make sync` | Install/refresh the virtualenv from `uv.lock` |
 | `make test` | Run the test suite |
 | `make warehouse` | Build the full warehouse (2023–2025) in one command |
@@ -101,6 +139,7 @@ make test
 | `make tools-demo` | Print all six tools under both a dynasty and a redraft context |
 | `make chat` | Conversational REPL, running locally at no cost |
 | `make eval MODEL=qwen3:8b` | Eval suite — how a model gets chosen |
+| `make eval-compare MODELS=a,b,c` | Score several models and rank them |
 | `make clean` | Remove the local database, caches, and build artifacts |
 
 Ingest is idempotent — re-running replaces rows rather than duplicating them.
@@ -379,4 +418,6 @@ runtimes later touches one file.
 
 **Database access rule:** nothing outside [src/advisor/db.py](src/advisor/db.py)
 imports `duckdb`. Every other module uses `get_conn()` and `query()`. That is
-what keeps the Phase 8 swap to Postgres a one-file change.
+good design regardless — it keeps storage swappable and the tool layer
+ignorant of it. (The Postgres migration itself was dropped with the pivot to
+local-first: DuckDB is the permanent answer.)
