@@ -36,6 +36,28 @@ KEEP_ALIVE = "10m"
 # models loop on the same wrong call instead of trying another.
 TEMPERATURE = 0.1
 
+# Temperature 0.1 is not deterministic, and a 12-case suite is small enough that
+# sampling noise flips individual cases in both directions between runs. That is
+# survivable when evals catch regressions; it is disqualifying when evals PICK
+# THE MODEL, because a one-run-each comparison would partly measure luck.
+# Pinning the seed makes a rerun reproducible, so a case that changes between
+# two models reflects the models. It samples one draw rather than an average —
+# the honest fix for that is more cases, not a floating seed.
+EVAL_SEED = 7
+
+# Ollama defaults to a 4096-token window, and it does NOT error when a request
+# exceeds it — the runtime silently drops tokens and answers from what's left.
+# That is a quiet correctness bug here, not a performance one: the system prompt
+# holds the rule "never state a statistic that did not come from a tool result",
+# so a turn that overflows can lose the very instruction that keeps numbers
+# honest. Six tool schemas plus the prompt already cost ~2k tokens before the
+# user has asked anything, and one roster result can cost as much again.
+#
+# 8192 is the default because it fits the 16GB floor this app targets (~1.2GB of
+# KV cache for an 8B model, on top of ~5.5GB of weights). Raise it with
+# CONTEXT_TOKENS if you have the headroom.
+MIN_CONTEXT_TOKENS = 8192
+
 
 def to_ollama_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Translate the registry's schemas into the runtime's function format."""
@@ -72,11 +94,21 @@ def _coerce_arguments(raw: Any) -> dict[str, Any]:
 class OllamaBackend:
     """Chat completions against a local Ollama server."""
 
-    def __init__(self, model: str | None = None, host: str | None = None) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        host: str | None = None,
+        *,
+        seed: int | None = None,
+    ) -> None:
         settings = get_settings()
         self.model = model or settings.model
         self.host = (host or settings.ollama_host).rstrip("/")
         self.name = f"ollama:{self.model}"
+        self.context_tokens = settings.context_tokens
+        # Chat leaves this None: a user who rephrases a question and gets the
+        # identical answer back is being failed by a frozen seed.
+        self.seed = seed
 
     # ------------------------------------------------------------------ health
 
@@ -133,7 +165,11 @@ class OllamaBackend:
             "messages": [{"role": "system", "content": system}, *messages],
             "stream": False,
             "keep_alive": KEEP_ALIVE,
-            "options": {"temperature": TEMPERATURE},
+            "options": {
+                "temperature": TEMPERATURE,
+                "num_ctx": max(self.context_tokens, MIN_CONTEXT_TOKENS),
+                **({} if self.seed is None else {"seed": self.seed}),
+            },
         }
         if tools:
             payload["tools"] = to_ollama_tools(tools)

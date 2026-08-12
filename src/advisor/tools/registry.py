@@ -296,6 +296,49 @@ def tool_names() -> list[str]:
     return [tool["name"] for tool in TOOLS]
 
 
+def _schema_for(name: str) -> dict:
+    for tool in TOOLS:
+        if tool["name"] == name:
+            return tool["input_schema"].get("properties", {})
+    return {}
+
+
+def coerce_arguments(name: str, arguments: dict) -> dict:
+    """Fit a model's arguments to the tool's declared types.
+
+    Small models emit `"8"` for an integer and a bare string where an array is
+    wanted. Those are usable calls with the wrong wrapper, and rejecting them
+    throws away work the model got right — the same reasoning that makes the
+    backend accept tool arguments as a JSON string. It matters more than it
+    looks: `weeks="8"` reached `min(weeks, MAX_WEEKS)` and raised a TypeError,
+    which cost llama3.1:8b three of its twelve eval cases and read as a model
+    failure rather than ours.
+
+    Anything that will not convert is passed through untouched, so the tool
+    still returns its own error and the model can correct itself.
+    """
+    schema = _schema_for(name)
+    fitted = {}
+    for key, value in arguments.items():
+        want = schema.get(key, {}).get("type")
+        try:
+            if want == "integer" and isinstance(value, str):
+                value = int(float(value.strip()))
+            elif want == "number" and isinstance(value, str):
+                value = float(value.strip())
+            elif want == "boolean" and isinstance(value, str):
+                value = value.strip().lower() in {"true", "yes", "1"}
+            elif want == "array" and isinstance(value, str):
+                # "a, b" and "a" are both a list of one or more to a model.
+                value = [part.strip() for part in value.split(",") if part.strip()]
+            elif want == "array" and not isinstance(value, list):
+                value = [value]
+        except (TypeError, ValueError):
+            pass  # leave it; the tool's own error is clearer than a guess
+        fitted[key] = value
+    return fitted
+
+
 def validate_registry() -> None:
     """Every advertised tool must be callable, and vice versa."""
     advertised = set(tool_names())

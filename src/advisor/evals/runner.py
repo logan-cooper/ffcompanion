@@ -36,6 +36,20 @@ NUMBER_PATTERN = re.compile(r"\d+\.\d+|\b\d{2,}\b")
 # off a tool result.
 GROUNDING_EXEMPT = {"2023", "2024", "2025", "2026", "2027", "10", "12", "16", "17", "18"}
 
+# A correct answer nobody waits for is not a working feature: start_sit once
+# "passed" in 288s, twelve seconds under the HTTP timeout, and the report called
+# it clean. So slowness is surfaced — but it is NOT a failure, because wall clock
+# on a laptop is not reproducible. The same model at the same seed ran 3-5x
+# slower while the machine was busy (ambiguous_name 30s -> 136s), so gating on it
+# would fail cases for being unlucky and would corrupt exactly the model
+# comparison the pinned seed exists to make fair. Report it, rank on it, don't
+# fail on it. Cases can override with `max_seconds`.
+DEFAULT_MAX_SECONDS = 120
+
+# Half a percentage point, which is what rounding a fraction to a whole percent
+# costs (0.785 -> "79%"), plus slack for binary floating point.
+PERCENT_TOLERANCE = 0.0051
+
 # Phrases that indicate the model committed to a choice.
 PICK_MARKERS = (
     "start", "i'd", "i would", "recommend", "go with", "pick", "choose",
@@ -54,6 +68,11 @@ class CaseResult:
     tokens: int = 0
     seconds: float = 0.0
     answer: str = ""
+    # The run never reached the model (timeout, server down). Reported apart
+    # from model failures because the fix is a different one.
+    infrastructure_error: bool = False
+    # Answered correctly, but too slowly to be worth waiting for.
+    too_slow: bool = False
 
 
 def _numbers(text: str) -> list[str]:
@@ -83,6 +102,21 @@ def _is_grounded(number: str, corpus: str) -> bool:
                 return True
         except ValueError:
             continue
+
+    # Rates come back as fractions (usage: 0.785) and get written as percentages
+    # ("78.5% snap share"). That is unit conversion, the same kind of reading
+    # rounding is — flagging it as invention would penalise a model for stating
+    # a rate the way people actually say it. Bounded to plausible percentages so
+    # a cited 305 cannot match a corpus 3.05, and toleranced to half a point so
+    # rounding to a whole percent still counts.
+    if 0 <= value <= 100:
+        fraction = value / 100
+        for found in re.findall(r"\d*\.\d+", corpus):
+            try:
+                if abs(float(found) - fraction) <= PERCENT_TOLERANCE:
+                    return True
+            except ValueError:
+                continue
     return False
 
 
@@ -101,6 +135,16 @@ def check(case: dict, turn: Turn, messages: list[dict]) -> CaseResult:
     )
     answer = turn.text or ""
     lowered = answer.lower()
+
+    # A backend failure is not a model failure, and scoring it as one sends you
+    # tuning a prompt when the actual problem is the runtime. It also poisons
+    # the grounding audit: the error text carries a port and a timeout value,
+    # which read as invented statistics and are nothing of the sort.
+    if turn.errors:
+        result.infrastructure_error = True
+        result.failures.append(f"backend error: {turn.errors[0][:120]}")
+        result.passed = False
+        return result
 
     for tool in case.get("expect_tools", []):
         if tool not in turn.tools_used:
@@ -142,6 +186,8 @@ def check(case: dict, turn: Turn, messages: list[dict]) -> CaseResult:
 
     if turn.hit_iteration_cap:
         result.failures.append("hit iteration cap")
+
+    result.too_slow = turn.elapsed_seconds > case.get("max_seconds", DEFAULT_MAX_SECONDS)
 
     result.passed = not result.failures
     return result
@@ -216,11 +262,14 @@ def report(results: list[CaseResult], label: str) -> str:
     ]
     for r in results:
         mark = "pass" if r.passed else "FAIL"
+        slow = " SLOW" if r.too_slow else ""
         lines.append(
-            f"{r.id:<22}{mark:<8}{','.join(r.tools_used)[:32]:<34}{r.seconds:>6.1f}"
+            f"{r.id:<22}{mark:<8}{','.join(r.tools_used)[:32]:<34}{r.seconds:>6.1f}{slow}"
         )
         for failure in r.failures:
             lines.append(f"{'':22}  - {failure}")
+
+    broken = sum(1 for r in results if r.infrastructure_error)
 
     lines += [
         "-" * 74,
@@ -229,8 +278,20 @@ def report(results: list[CaseResult], label: str) -> str:
         f"grounding          {grounding:.1%}  ({fabrications} case(s) with invented numbers)",
         f"tokens             {tokens:,}",
         f"wall clock         {seconds:.0f}s   ($0.00 — runs on your machine)",
-        "",
     ]
+    if broken:
+        lines.append(
+            f"NOT MEASURED       {broken} case(s) failed on the backend, not the "
+            f"model — fix those before reading the score above"
+        )
+    slow = [r for r in results if r.too_slow]
+    if slow:
+        worst = max(slow, key=lambda r: r.seconds)
+        lines.append(
+            f"slow               {len(slow)} case(s) over budget, worst "
+            f"{worst.id} at {worst.seconds:.0f}s (correct, but not worth waiting for)"
+        )
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -247,7 +308,7 @@ def scoreboard(runs: dict[str, list[CaseResult]]) -> str:
         "MODEL COMPARISON",
         "=" * 78,
         f"{'model':<20}{'passed':>9}{'tools ok':>10}{'grounded':>10}"
-        f"{'fabricated':>12}{'min':>7}",
+        f"{'fabricated':>12}{'slow':>6}{'min':>7}",
         "-" * 78,
     ]
     ranked = []
@@ -261,14 +322,25 @@ def scoreboard(runs: dict[str, list[CaseResult]]) -> str:
         )
         grounding = sum(r.grounding_rate for r in results) / total
         fabricated = sum(1 for r in results if r.ungrounded)
+        slow = sum(1 for r in results if r.too_slow)
         minutes = sum(r.seconds for r in results) / 60
         ranked.append((tools_ok, grounding, passed, -minutes, label))
         lines.append(
             f"{label[:19]:<20}{f'{passed}/{total}':>9}{f'{tools_ok}/{total}':>10}"
-            f"{grounding:>9.0%}{fabricated:>12}{minutes:>7.1f}"
+            f"{grounding:>9.0%}{fabricated:>12}{slow:>6}{minutes:>7.1f}"
         )
 
     lines.append("-" * 78)
+    broken = {
+        label: sum(1 for r in results if r.infrastructure_error)
+        for label, results in runs.items()
+    }
+    if any(broken.values()):
+        detail = ", ".join(f"{label} {n}" for label, n in broken.items() if n)
+        lines.append(
+            f"WARNING: backend failures make this comparison unsound ({detail}) — "
+            "those cases scored no model at all."
+        )
     if ranked:
         ranked.sort(reverse=True)
         winner = ranked[0][4]
@@ -297,6 +369,53 @@ def per_case_matrix(runs: dict[str, list[CaseResult]]) -> str:
     return "\n".join(lines)
 
 
+def cache_path(directory: Path, model: str) -> Path:
+    return directory / f"{model.replace(':', '_').replace('/', '_')}.json"
+
+
+def save_run(directory: Path, model: str, results: list[CaseResult]) -> Path:
+    """Persist one model's results so a comparison survives a shutdown.
+
+    Three models is ~45 minutes of local inference. Holding all of it in memory
+    until the last one finishes means closing the laptop costs the whole run.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    path = cache_path(directory, model)
+    path.write_text(as_json(results, model))
+    return path
+
+
+def load_run(directory: Path, model: str, expected_cases: int) -> list[CaseResult] | None:
+    """Reload a finished model, or None if it is absent or from a different suite."""
+    path = cache_path(directory, model)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (ValueError, OSError):
+        return None
+    cases = payload.get("cases", [])
+    # A cached run from a different case list would silently compare models on
+    # different questions, which is worse than re-running.
+    if len(cases) != expected_cases:
+        return None
+    return [
+        CaseResult(
+            id=c["id"],
+            passed=c["passed"],
+            failures=c.get("failures", []),
+            tools_used=c.get("tools", []),
+            grounding_rate=c.get("grounding_rate", 1.0 if c["passed"] else 0.0),
+            ungrounded=c.get("ungrounded", []),
+            seconds=c.get("seconds", 0.0),
+            answer=c.get("answer", ""),
+            too_slow=c.get("too_slow", False),
+            infrastructure_error=c.get("infrastructure_error", False),
+        )
+        for c in cases
+    ]
+
+
 def as_json(results: list[CaseResult], label: str) -> str:
     return json.dumps(
         {
@@ -312,6 +431,13 @@ def as_json(results: list[CaseResult], label: str) -> str:
                     "tools": r.tools_used,
                     "ungrounded": r.ungrounded,
                     "seconds": round(r.seconds, 1),
+                    "grounding_rate": r.grounding_rate,
+                    "too_slow": r.too_slow,
+                    "infrastructure_error": r.infrastructure_error,
+                    # Only for failures, and only far enough to see what went
+                    # wrong. "invented 78.5" is not diagnosable without the
+                    # sentence it appeared in.
+                    **({} if r.passed else {"answer": r.answer[:1500]}),
                 }
                 for r in results
             ],

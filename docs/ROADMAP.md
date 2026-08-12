@@ -731,6 +731,100 @@ is auditable rather than remembered.
   an exclusive lock, so the suite fails with a hundred confusing connection
   errors that look like a regression and are not.
 
+### Model chosen: qwen3:8b (2026-08-12)
+
+Twelve cases, seed pinned, 8192-token context, same league and week for all
+three:
+
+```
+model                  passed  tools ok  grounded  fabricated  slow    min
+--------------------------------------------------------------------------
+qwen3:8b                11/12     12/12     100%           0     1   15.0
+llama3.1:8b              9/12      9/12     100%           0     0    2.4
+hermes3:8b               3/12      4/12      92%           1     0    0.9
+```
+
+**qwen3:8b** wins on the criteria that decide it: perfect tool selection and no
+invented numbers. Its one failure is `waiver_wire` ("no recommendation given"),
+reproducible across two seeded runs, and `start_sit` answers correctly but takes
+342s — both the same behaviour, surveying instead of deciding on open-ended
+roster questions. That is a prompt problem, and it is the next work.
+
+**llama3.1:8b is the honourable mention and the fallback.** Also zero
+fabrications, and **six times faster** (2.4 min vs 15.0 for the same suite) —
+qwen3 spends its time in a reasoning block that this app mostly does not need.
+It loses on tool discipline: it calls `compare_players` without `resolve_player`
+first, and sometimes writes a tool call as prose in its answer instead of
+emitting one. If the 342s `start_sit` proves unfixable, revisit this trade.
+
+**hermes3:8b is unusable here**, and not because it is weak. It asks the user
+for the data instead of calling tools — "could you provide the player_ids",
+"provide me with your league ID". Those are exactly the session values kept out
+of tool schemas on purpose (the model cannot know them, so the loop binds them).
+A model that responds to their absence by interrogating the user cannot work in
+this architecture, whatever its benchmark scores say.
+
+Re-run any of this with `make eval-compare MODELS=...`; finished models are
+reused from `evals/results/` unless you pass `--fresh`.
+
+### What the first real runs taught (2026-08-12)
+
+The first baseline scored **6/12 with 70% grounding**, and almost none of that
+was the model. Recorded here because each one is a way an eval harness lies to
+you, and the lie always looks like a model problem.
+
+**1. The runtime silently truncated every long turn.** Ollama defaults to a
+4096-token context window and does not error when a request exceeds it — it
+drops tokens and answers from what is left. The fixed overhead here is ~2k
+tokens (six tool schemas ~1289, system prompt ~700) before the user has asked
+anything, and one `get_my_roster` result is ~1387 more. Three cases were
+overflowing into a context-shift thrash and hitting the 300s HTTP timeout.
+Setting `num_ctx` to 8192 took the suite from 6/12 in 23.8 min to 10/12 in
+13.9 min, and turned `my_roster` from a 308s timeout into a 62s pass.
+*Symptom of the bug: slow wrong answers, never an error.*
+
+**2. Backend failures were scored as fabrications.** A timeout message contains
+the port (11434) and the timeout (300). The grounding audit read those as
+invented statistics, so an infrastructure failure was indistinguishable from a
+lying model — and would have sent us tuning the prompt. Backend errors are now
+their own category, reported as **NOT MEASURED**, never as a model failure.
+
+**3. Correct unit conversion was scored as fabrication.** `compare_players`
+returns `snap_share: 0.785`; the model wrote "78.5% snap share" and was marked
+as inventing a number. Percent conversion is reading, exactly like rounding.
+Corrected, **qwen3:8b fabricated nothing across all 12 cases** — the opposite of
+what the first run reported.
+
+**4. Wall clock is not a pass/fail criterion.** `start_sit` "passed" in 288s,
+twelve seconds under the timeout — correct answer, unusable feature, invisible
+in the report. But gating on time proved worse: the same model at the same seed
+ran 3-5x slower while the laptop was busy (`ambiguous_name` 30s → 136s). A time
+gate fails cases for being unlucky. Slowness is now reported (`SLOW`) and ranked
+on, never failed on.
+
+**5. Pin the seed for evals, never for chat.** Temperature 0.1 is not
+deterministic, and a 12-case suite is small enough that noise flips individual
+cases in both directions — survivable when evals catch regressions,
+disqualifying when evals *pick the model*. Chat leaves the seed free, because a
+user who rephrases a question deserves a different answer.
+
+**6. Save each model's run as it finishes.** Three models is ~45 minutes; a
+laptop closing during the third should not cost the first two. `eval-compare`
+writes to `evals/results/` per model and reuses finished runs, rejecting any
+cached run whose case count no longer matches.
+
+**7. A strict tool signature scored our bug against a model.** llama3.1:8b sent
+`weeks="8"`, which reached `min(weeks, MAX_WEEKS)` and raised a TypeError. Three
+of its twelve cases died there and read as model failures. Arguments are now
+fitted to each tool's declared types before dispatch (`coerce_arguments`), which
+took it from 8/12 to 9/12 — a number that is finally about the model. A small
+model getting the type *wrapper* wrong is not the same as getting the call
+wrong, and rejecting it throws away work the model got right.
+
+The through-line: **an eval harness needs its own tests.** Every one of these
+made a working system look broken or a broken measurement look authoritative.
+Six of the seven initially presented as "the model is bad at this."
+
 **Done when:** the suite runs in one command and you have a baseline score. From
 here on, no prompt or tool change ships without re-running it. This is the part
 of the project that actually teaches you agent engineering.

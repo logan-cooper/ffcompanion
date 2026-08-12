@@ -87,3 +87,6 @@
   followup: "What about compared to Jaxon Smith-Njigba?"
   expect_tools: [resolve_player, compare_players]
   grounded: true
+  # Two full turns, so it gets two turns' worth of budget — not a licence to be
+  # slow, which is why it is 2x and not open-ended.
+  max_seconds: 240

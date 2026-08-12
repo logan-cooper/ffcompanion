@@ -220,3 +220,8 @@ __marimo__/
 # ffcompanion: local data warehouse (DuckDB file + raw Parquet cache)
 data/*
 !data/.gitkeep
+
+# Saved eval runs. These are resume state for `eval-compare`, machine-specific
+# and full of model prose; the numbers that justify the model choice belong in
+# docs/ROADMAP.md, not here.
+evals/results/

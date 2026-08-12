@@ -7,6 +7,7 @@ arrives in Phase 5.
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from collections.abc import Sequence
 
@@ -137,6 +138,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compare.add_argument("--league-id", default=None)
     compare.add_argument("--week", type=int, default=None)
+    compare.add_argument(
+        "--out",
+        default="evals/results",
+        help="Where finished per-model runs are saved, so a stopped comparison resumes.",
+    )
+    compare.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Re-run every model instead of reusing saved runs.",
+    )
 
     demo = subparsers.add_parser(
         "tools-demo",
@@ -465,8 +476,9 @@ def _cmd_chat(args: argparse.Namespace) -> int:
 
 
 def _cmd_eval(args: argparse.Namespace) -> int:
-    from advisor.agent import new_backend
     from advisor.agent.backend import BackendError
+    from advisor.agent.ollama import EVAL_SEED
+    from advisor.config import get_settings
     from advisor.context import load_context
     from advisor.evals import as_json, load_cases, report, run_suite
 
@@ -478,10 +490,11 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
     ctx = load_context(league_id, roster_id=default_roster, current_week=args.week)
 
+    # Evals pin the seed so a rerun is reproducible; chat deliberately does not.
     try:
-        backend = new_backend() if args.model is None else _backend_for(args.model)
+        backend = _backend_for(args.model or get_settings().model, seed=EVAL_SEED)
     except BackendError as exc:
-        print(f"\n{exc}\n")
+        print(f"\n{exc}\n", file=sys.stderr)
         return 1
 
     cases = load_cases()
@@ -491,9 +504,12 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             print(f"no case named {args.case!r}")
             return 1
 
-    if not args.json:
-        print(f"\n{backend.name} — {len(cases)} cases against {ctx.name}")
-        print("running locally; this costs time, not money.\n", flush=True)
+    # Progress goes to stderr, results to stdout. That split is what makes
+    # `eval --json > results.json` still watchable — sending progress to stdout
+    # meant redirecting the results also swallowed every sign of life, so a
+    # 20-minute run looked identical to a hung one.
+    print(f"\n{backend.name} — {len(cases)} cases against {ctx.name}", file=sys.stderr)
+    print("running locally; this costs time, not money.\n", file=sys.stderr, flush=True)
 
     # flush=True matters more than it looks: a local suite takes minutes, and
     # without it Python buffers every progress line until the run ends, so a
@@ -509,12 +525,11 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         print(
             f"  [{done}/{len(cases)}] {'pass' if result.passed else 'FAIL'}  "
             f"{result.id:<22} {result.seconds:>5.1f}s   ~{eta / 60:.1f}m left",
+            file=sys.stderr,
             flush=True,
         )
 
-    results = run_suite(
-        backend, ctx, cases, on_result=(lambda _: None) if args.json else progress
-    )
+    results = run_suite(backend, ctx, cases, on_result=progress)
 
     print(as_json(results, backend.name) if args.json else report(results, backend.name))
     return 0 if all(r.passed for r in results) else 1
@@ -522,9 +537,13 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
 def _cmd_eval_compare(args: argparse.Namespace) -> int:
     """Run the same suite against several models. This is how one gets chosen."""
+    from pathlib import Path
+
     from advisor.agent.backend import BackendError
+    from advisor.agent.ollama import EVAL_SEED
     from advisor.context import load_context
     from advisor.evals import load_cases, per_case_matrix, run_suite, scoreboard
+    from advisor.evals.runner import load_run, save_run
 
     try:
         league_id, default_roster = _pick_league(args.league_id)
@@ -535,20 +554,38 @@ def _cmd_eval_compare(args: argparse.Namespace) -> int:
     ctx = load_context(league_id, roster_id=default_roster, current_week=args.week)
     cases = load_cases()
     models = [m.strip() for m in args.models.split(",") if m.strip()]
+    results_dir = Path(args.out)
 
     total_minutes = len(models) * len(cases) * 1.2
-    print(f"\n{len(models)} models x {len(cases)} cases against {ctx.name}")
-    print(f"rough estimate {total_minutes:.0f} min. Costs time, not money.\n", flush=True)
+    # Progress on stderr, the scoreboard on stdout — this run is long enough
+    # that piping the comparison to a file is the normal way to use it.
+    print(f"\n{len(models)} models x {len(cases)} cases against {ctx.name}", file=sys.stderr)
+    print(
+        f"rough estimate {total_minutes:.0f} min. Costs time, not money.\n",
+        file=sys.stderr,
+        flush=True,
+    )
 
     runs: dict[str, list] = {}
     for model in models:
-        try:
-            backend = _backend_for(model)
-        except BackendError as exc:
-            print(f"skipping {model}: {exc}\n", flush=True)
+        cached = None if args.fresh else load_run(results_dir, model, len(cases))
+        if cached is not None:
+            runs[model] = cached
+            print(
+                f"--- {model} --- reusing finished run "
+                f"({sum(r.passed for r in cached)}/{len(cached)}); --fresh to redo",
+                file=sys.stderr,
+                flush=True,
+            )
             continue
 
-        print(f"--- {model} ---", flush=True)
+        try:
+            backend = _backend_for(model, seed=EVAL_SEED)
+        except BackendError as exc:
+            print(f"skipping {model}: {exc}\n", file=sys.stderr, flush=True)
+            continue
+
+        print(f"--- {model} ---", file=sys.stderr, flush=True)
         started = time.monotonic()
         done = 0
 
@@ -560,14 +597,18 @@ def _cmd_eval_compare(args: argparse.Namespace) -> int:
             print(
                 f"  [{done}/{len(cases)}] {'pass' if result.passed else 'FAIL'}  "
                 f"{result.id:<22} {result.seconds:>5.1f}s   ~{eta / 60:.1f}m left",
+                file=sys.stderr,
                 flush=True,
             )
 
         runs[model] = run_suite(backend, ctx, cases, on_result=progress)
-        print(flush=True)
+        # Persist per model, not at the end: closing the laptop during model
+        # three should not cost models one and two.
+        saved = save_run(results_dir, model, runs[model])
+        print(f"  saved {saved}\n", file=sys.stderr, flush=True)
 
     if not runs:
-        print("no models could be evaluated")
+        print("no models could be evaluated", file=sys.stderr)
         return 1
 
     print(scoreboard(runs))
@@ -575,10 +616,10 @@ def _cmd_eval_compare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _backend_for(model: str):
+def _backend_for(model: str, *, seed: int | None = None):
     from advisor.agent.ollama import OllamaBackend
 
-    backend = OllamaBackend(model=model)
+    backend = OllamaBackend(model=model, seed=seed)
     backend.health()
     return backend
 

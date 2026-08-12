@@ -27,6 +27,7 @@ from advisor.agent.backend import Backend, BackendError, Reply, ToolCall
 from advisor.agent.prompt import build_system_prompt
 from advisor.context import LeagueContext
 from advisor.tools import REGISTRY, TOOLS
+from advisor.tools.registry import coerce_arguments
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +97,9 @@ def _run_tool(call: ToolCall, ctx: LeagueContext) -> tuple[str, bool]:
     # Anything the model invented for these is discarded on purpose.
     for session_owned in ("league_id", "ctx"):
         arguments.pop(session_owned, None)
+    # Fit "8" to 8 and a bare string to a list before dispatch. A small model
+    # getting the type wrapper wrong is not the same as getting the call wrong.
+    arguments = coerce_arguments(call.name, arguments)
     arguments["ctx"] = ctx
 
     try:

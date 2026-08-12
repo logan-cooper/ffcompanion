@@ -33,8 +33,16 @@ make chat
 ```
 
 **Hardware:** ~16GB RAM is a realistic floor. A 7–8B model at 4-bit
-quantization is ~5GB on disk and ~6GB resident alongside the warehouse. On 8GB
-it will be painful.
+quantization is ~5GB on disk and ~6.5GB resident alongside the warehouse — that
+includes the 8192-token context window this app requires, which costs about
+0.9GB of key/value cache on top of the weights. On 8GB it will be painful.
+
+The context size is not optional. Ollama's own default is 4096, and it does not
+error when a request exceeds it — it silently drops tokens, so the symptom is a
+slow, subtly wrong answer rather than a clear failure. Six tool schemas plus the
+system prompt plus one roster already come to ~3.4k tokens. The app sets this
+for you (`CONTEXT_TOKENS`); the note is here because a 4096 window cost this
+project a full day of chasing what looked like a bad model.
 
 **Speed is the tradeoff.** A turn takes tens of seconds rather than one or two,
 and the eval suite runs 15–20 minutes. That is the price of free, and it is
@@ -52,13 +60,20 @@ make eval-compare MODELS=qwen3:8b,llama3.1:8b,hermes3:8b
 ```
 
 ```
-model                  passed  tools ok  grounded  fabricated    min
-------------------------------------------------------------------
-qwen3:8b                  …/12      …/12       …%           …      …
+model                  passed  tools ok  grounded  fabricated  slow    min
+--------------------------------------------------------------------------
+qwen3:8b                  …/12      …/12       …%           …     …      …
 ```
 
 Speed is reported but is only a tiebreak: a fast model that fabricates
 statistics is useless to an app whose entire premise is traceable numbers.
+`slow` counts answers that were correct but took longer than a case's budget —
+worth seeing, never a failure, because wall clock on a laptop varies 3–5x with
+whatever else is running.
+
+Each model is saved to `evals/results/` as it finishes and reused on a re-run,
+so a comparison interrupted by closing the laptop resumes instead of starting
+over. `--fresh` re-runs everything.
 
 ## Setup
 

@@ -40,6 +40,10 @@ class Settings(BaseSettings):
         default="http://localhost:11434",
         description="Base URL of the local Ollama server.",
     )
+    context_tokens: int = Field(
+        default=8192,
+        description="Model context window. Must fit the prompt plus tool results.",
+    )
     db_path: Path = Field(
         default=Path("data/advisor.duckdb"),
         description="Path to the local DuckDB file.",

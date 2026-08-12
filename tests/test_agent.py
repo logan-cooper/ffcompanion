@@ -13,17 +13,26 @@ import pytest
 
 from advisor.agent.backend import Reply, ToolCall
 from advisor.agent.loop import MAX_ITERATIONS, Turn, _run_tool
-from advisor.agent.ollama import _coerce_arguments, to_ollama_tools
+from advisor.agent.ollama import (
+    EVAL_SEED,
+    MIN_CONTEXT_TOKENS,
+    OllamaBackend,
+    _coerce_arguments,
+    to_ollama_tools,
+)
 from advisor.evals.runner import (
+    DEFAULT_MAX_SECONDS,
     CaseResult,
     _is_grounded,
     _numbers,
     check,
     load_cases,
     per_case_matrix,
+    report,
     scoreboard,
 )
 from advisor.tools import TOOLS
+from advisor.tools.registry import coerce_arguments
 
 
 # --------------------------------------------------------------- schema shape
@@ -62,6 +71,74 @@ def test_tool_arguments_coerce_without_raising(raw, expected):
     """A model emitting a JSON string here is common, not malformed — rejecting
     it would throw away usable calls."""
     assert _coerce_arguments(raw) == expected
+
+
+# --------------------------------------------------------------- context window
+
+class _FakeResponse:
+    status_code = 200
+
+    def json(self) -> dict:
+        return {"message": {"role": "assistant", "content": "ok"}}
+
+
+def _capture_payload(monkeypatch) -> dict:
+    """Run one chat() and return the payload that would have gone over HTTP."""
+    captured: dict = {}
+
+    def fake_post(url, json=None, timeout=None):
+        captured.update(json or {})
+        return _FakeResponse()
+
+    monkeypatch.setattr("advisor.agent.ollama.requests.post", fake_post)
+    OllamaBackend(model="test:8b").chat(system="s", messages=[], tools=[])
+    return captured
+
+
+def test_context_window_is_requested_explicitly(monkeypatch):
+    """Ollama defaults to 4096 and silently truncates past it — so a turn that
+    overflows can drop the very prompt rule that keeps numbers honest."""
+    options = _capture_payload(monkeypatch)["options"]
+    assert options["num_ctx"] >= MIN_CONTEXT_TOKENS
+
+
+def test_context_window_never_falls_below_the_floor(monkeypatch):
+    """A too-small override is a silent correctness bug, so it gets clamped."""
+    backend = OllamaBackend(model="test:8b")
+    backend.context_tokens = 512
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        "advisor.agent.ollama.requests.post",
+        lambda url, json=None, timeout=None: (captured.update(json), _FakeResponse())[1],
+    )
+    backend.chat(system="s", messages=[], tools=[])
+    assert captured["options"]["num_ctx"] == MIN_CONTEXT_TOKENS
+
+
+def test_chat_does_not_pin_the_seed(monkeypatch):
+    """A user who rephrases a question and gets a byte-identical answer back is
+    being failed by a frozen seed, so only evals pin one."""
+    assert "seed" not in _capture_payload(monkeypatch)["options"]
+
+
+def test_evals_pin_the_seed(monkeypatch):
+    """Evals pick the model here; a one-run-each comparison must not measure
+    sampling luck."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        "advisor.agent.ollama.requests.post",
+        lambda url, json=None, timeout=None: (captured.update(json), _FakeResponse())[1],
+    )
+    OllamaBackend(model="test:8b", seed=EVAL_SEED).chat(system="s", messages=[], tools=[])
+    assert captured["options"]["seed"] == EVAL_SEED
+
+
+def test_the_floor_clears_the_fixed_overhead():
+    """Six tool schemas plus the system prompt cost ~2k tokens before the user
+    has said anything; the window has to leave real room for tool results."""
+    schema_tokens = len(json.dumps(to_ollama_tools(TOOLS))) // 4
+    assert MIN_CONTEXT_TOKENS > schema_tokens * 4
 
 
 # ------------------------------------------------------------------- the loop
@@ -108,6 +185,41 @@ def test_turn_summary_is_renderable():
     assert "2 iter" in turn.summary()
 
 
+# ------------------------------------------------------- argument type fitting
+
+def test_string_integers_are_fitted():
+    """weeks="8" reached min(weeks, MAX_WEEKS) and raised TypeError, costing
+    llama3.1:8b three eval cases — our bug, scored against the model."""
+    assert coerce_arguments("compare_players", {"weeks": "8"})["weeks"] == 8
+
+
+def test_a_bare_value_becomes_a_list_where_one_is_wanted():
+    fitted = coerce_arguments("compare_players", {"player_ids": "00-0038542"})
+    assert fitted["player_ids"] == ["00-0038542"]
+
+    both = coerce_arguments("compare_players", {"player_ids": "00-01, 00-02"})
+    assert both["player_ids"] == ["00-01", "00-02"]
+
+
+def test_a_correct_call_is_left_alone():
+    original = {"player_ids": ["00-01", "00-02"], "weeks": 8}
+    assert coerce_arguments("compare_players", original) == original
+
+
+def test_unconvertible_values_pass_through_untouched():
+    """The tool's own error beats a guess — the model can correct itself."""
+    assert coerce_arguments("compare_players", {"weeks": "lots"})["weeks"] == "lots"
+
+
+def test_unknown_arguments_are_not_dropped():
+    """Dropping them would hide the mistake from the model that made it."""
+    assert coerce_arguments("compare_players", {"nonsense": 1})["nonsense"] == 1
+
+
+def test_fitting_an_unknown_tool_is_harmless():
+    assert coerce_arguments("no_such_tool", {"a": "1"}) == {"a": "1"}
+
+
 # ------------------------------------------------------------------ grounding
 
 @pytest.mark.parametrize(
@@ -121,6 +233,22 @@ def test_turn_summary_is_renderable():
     ],
 )
 def test_grounding_allows_rounding_but_not_invention(number, corpus, grounded):
+    assert _is_grounded(number, corpus) is grounded
+
+
+@pytest.mark.parametrize(
+    "number,corpus,grounded",
+    [
+        # The real case: compare_players returns usage as a fraction, and the
+        # model wrote "78.5% snap share". Reading, not inventing.
+        ("78.5", '{"usage": 0.785}', True),
+        ("79", '{"usage": 0.785}', True),  # rounded to a whole percent
+        ("65", '{"usage": 0.785}', False),  # a rate that is simply not there
+        # Must not let a large fabricated number match an unrelated small one.
+        ("305", '{"win_now": 3.05}', False),
+    ],
+)
+def test_percentages_read_off_fractions_are_grounded(number, corpus, grounded):
     assert _is_grounded(number, corpus) is grounded
 
 
@@ -196,6 +324,106 @@ def test_must_say_any_accepts_equivalent_wordings():
     assert check(case, _turn("That does not match any player."), []).passed
     assert check(case, _turn("I couldn't find them."), []).passed
     assert not check(case, _turn("He averaged well."), []).passed
+
+
+def test_slowness_is_flagged_but_does_not_fail_a_correct_answer():
+    """start_sit "passed" in 288s and the report called it clean, so slowness
+    must be visible — but the same model at the same seed ran 3-5x slower on a
+    busy laptop, so gating on wall clock would fail cases for being unlucky."""
+    slow = check(
+        {"id": "x", "ask": "?", "grounded": False},
+        _turn("Start Puka Nacua.", elapsed_seconds=288.0),
+        [],
+    )
+    assert slow.too_slow
+    assert slow.passed, "wall clock is not reproducible enough to gate on"
+
+
+def test_a_case_can_justify_a_bigger_budget():
+    """A two-turn case legitimately takes two turns' worth of time."""
+    turn = _turn("Start Puka Nacua.", elapsed_seconds=200.0)
+    case = {"id": "x", "ask": "?", "grounded": False, "max_seconds": 240}
+    assert not check(case, turn, []).too_slow
+
+
+def test_a_slow_pass_is_visible_in_both_reports():
+    slow = CaseResult(id="start_sit", passed=True, too_slow=True, seconds=288.0)
+    assert "SLOW" in report([slow], "m")
+    assert "not worth waiting for" in report([slow], "m")
+    assert "slow" in scoreboard({"m": [slow]})
+
+
+def test_shipped_cases_stay_inside_their_budgets():
+    """A budget nobody can meet is a broken assertion, not a standard."""
+    for case in load_cases():
+        budget = case.get("max_seconds", DEFAULT_MAX_SECONDS)
+        assert 0 < budget <= 300, f"{case['id']} budget {budget} exceeds the HTTP timeout"
+
+
+def test_backend_failure_is_not_scored_as_a_fabrication():
+    """A timeout message carries the port (11434) and the timeout (300). Audited
+    as an answer, those read as invented statistics — which is how a runtime
+    problem disguises itself as a model problem."""
+    turn = _turn("The model backend failed:\nRead timed out. (read timeout=300)")
+    turn.errors.append("Ollama request failed: port=11434 read timeout=300")
+
+    result = check({"id": "x", "ask": "?", "grounded": True}, turn, [])
+
+    assert not result.passed
+    assert result.infrastructure_error
+    assert not result.ungrounded, "must not blame the model for a timeout"
+    assert any("backend error" in f for f in result.failures)
+
+
+def test_failures_carry_their_answer_text_for_diagnosis():
+    """'invented 78.5' is not actionable without the sentence it appeared in."""
+    from advisor.evals.runner import as_json
+
+    failed = CaseResult(id="a", passed=False, answer="He averaged 78.5 ppg.")
+    payload = json.loads(as_json([failed, _result("b", True)], "m"))
+
+    assert payload["cases"][0]["answer"] == "He averaged 78.5 ppg."
+    assert "answer" not in payload["cases"][1], "passing cases stay compact"
+
+
+def test_a_finished_model_run_survives_a_restart(tmp_path):
+    """45 minutes of local inference should not be lost to closing a laptop."""
+    from advisor.evals.runner import load_run, save_run
+
+    original = [_result("a", True), _result("b", False, 0.5)]
+    save_run(tmp_path, "qwen3:8b", original)
+    restored = load_run(tmp_path, "qwen3:8b", expected_cases=2)
+
+    assert restored is not None
+    assert [r.id for r in restored] == ["a", "b"]
+    assert [r.passed for r in restored] == [True, False]
+    assert restored[1].grounding_rate == 0.5, "grounding must survive the round trip"
+
+
+def test_a_cached_run_from_a_different_suite_is_rejected(tmp_path):
+    """Comparing models on different questions is worse than re-running."""
+    from advisor.evals.runner import load_run, save_run
+
+    save_run(tmp_path, "qwen3:8b", [_result("a", True)])
+    assert load_run(tmp_path, "qwen3:8b", expected_cases=12) is None
+
+
+def test_missing_cache_is_not_an_error(tmp_path):
+    from advisor.evals.runner import load_run
+
+    assert load_run(tmp_path, "never-run:8b", expected_cases=12) is None
+
+
+def test_report_flags_unmeasured_cases():
+    broken = CaseResult(id="a", passed=False, infrastructure_error=True)
+    assert "NOT MEASURED" in report([broken], "m")
+    assert "NOT MEASURED" not in report([_result("a", True)], "m")
+
+
+def test_scoreboard_warns_when_a_comparison_is_unsound():
+    broken = CaseResult(id="a", passed=False, infrastructure_error=True)
+    assert "WARNING" in scoreboard({"m": [broken]})
+    assert "WARNING" not in scoreboard({"m": [_result("a", True)]})
 
 
 def test_empty_answer_fails():

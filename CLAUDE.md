@@ -4,11 +4,15 @@
 Fantasy football AI advisor. Full plan: docs/ROADMAP.md — read it before
 starting any phase.
 
-**Status: Phase 5 complete** (warehouse 2023-2025, Sleeper leagues, scoring
-engine, format-aware valuation, year-round validity, six-tool layer, local agent
-loop + eval harness). Next: pick a model with `make eval`, then tune the prompt
-against it. Don't skip ahead — each phase has a "Done when" test that gates the
-next one.
+**Status: Phase 5 complete, Phase 6 model choice made** (warehouse 2023-2025,
+Sleeper leagues, scoring engine, format-aware valuation, year-round validity,
+six-tool layer, local agent loop + eval harness). **The model is qwen3:8b** —
+11/12, 12/12 tool selection, 100% grounding; the evidence and the runners-up are
+in docs/ROADMAP.md Phase 6. Next: the prompt, against two measured defects —
+`waiver_wire` gives no recommendation, and `start_sit` answers correctly but
+takes 342s. Both are the same behaviour: surveying instead of deciding on
+open-ended roster questions. Don't skip ahead — each phase has a "Done when"
+test that gates the next one.
 
 ## Stack
 Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
@@ -41,7 +45,21 @@ no API key, no per-token cost, anywhere in this project.
   exclusive lock makes the suite fail with ~100 errors that look like a
   regression and aren't.
 - Local inference takes tens of seconds per turn and 15-20 min per eval suite.
-  Always flush progress output; unflushed, a working run looks hung.
+  Always flush progress output, and send it to STDERR — progress on stdout means
+  `eval --json > file` swallows every sign of life and a working run is
+  indistinguishable from a hung one.
+- Ollama's default context window is 4096 tokens and it does NOT error when a
+  request exceeds it — it silently drops tokens, so the symptom is a slow wrong
+  answer, never a clear failure. The six tool schemas (~1289 tokens) plus the
+  system prompt (~700) plus one get_my_roster result (~1387) is already ~3.4k
+  before the model writes anything. num_ctx is set explicitly in
+  src/advisor/agent/ollama.py and floored at 8192; that floor fits the 16GB
+  target machine (~0.9GB of extra KV cache).
+- An infrastructure failure is not a model failure. A timeout message carries
+  the port (11434) and the timeout (300), which the grounding audit reads as
+  invented statistics — so a runtime problem disguises itself as a fabricating
+  model and sends you tuning the prompt. CaseResult.infrastructure_error keeps
+  them apart; a case that errored is NOT MEASURED, not failed.
 - Raw stat tables store counting stats only — no fantasy_points column.
   Scoring is computed per-league at query time (src/advisor/scoring/).
 - Every tool takes league_id and returns a data_as_of field.
@@ -105,6 +123,11 @@ make verify-scoring       # scoring vs points Sleeper actually recorded
 make tools-demo           # all six tools, dynasty vs redraft, same args
 make chat                 # local REPL; needs `ollama serve` running
 make eval MODEL=qwen3:8b  # eval suite; 15-20 min, this is how a model gets picked
+make eval-compare MODELS=a,b,c   # scoreboard across models; ~15 min each
+
+Eval progress goes to STDERR, so `eval --json > out.json` still shows live
+progress. eval-compare saves each model to evals/results/ as it finishes and
+reuses those on a re-run, so a stopped comparison resumes; --fresh redoes all.
 
 Unbuilt targets exit 1 with the phase they land in; that's expected, not a
 broken setup. Everything runs through `uv run` — don't call bare `python`
