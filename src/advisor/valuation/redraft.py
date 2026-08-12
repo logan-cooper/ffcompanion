@@ -12,7 +12,9 @@ import json
 
 from advisor.context import LeagueContext
 from advisor.db import query
+from advisor.players import player_profile
 from advisor.scoring.projections import positional_scarcity, project_player
+from advisor.valuation.aging import relative_multiplier
 from advisor.valuation.base import PickValue, PlayerValue, RosterValue
 
 # Cache replacement levels per (league, position, season) — computing one scans
@@ -22,12 +24,19 @@ _replacement_cache: dict[tuple[str, str, int], float] = {}
 
 
 def replacement_level(ctx: LeagueContext, position: str | None) -> float:
+    """Replacement level, measured against the most recent season with data.
+
+    In the offseason `ctx.season` has no stats at all, so scarcity has to be
+    read off `stats_season` or every position would come back at zero and every
+    player would look like a league-winner.
+    """
     if not position:
         return 0.0
-    key = (ctx.league_id, position, ctx.season)
+    season = ctx.stats_season or ctx.season
+    key = (ctx.league_id, position, season)
     if key not in _replacement_cache:
         _replacement_cache[key] = positional_scarcity(
-            ctx.league_id, position, ctx.season
+            ctx.league_id, position, season
         ).replacement_points_per_game
     return _replacement_cache[key]
 
@@ -38,21 +47,40 @@ def clear_caches() -> None:
 
 
 def player_snapshot(player_id: str, ctx: LeagueContext) -> dict:
-    """Name, position, age, and per-game production for one player."""
-    rows = query(
-        "SELECT full_name, position, age FROM players "
-        "WHERE player_id = ? AND season = ?",
-        [player_id, ctx.season],
-    )
-    row = rows[0] if rows else {}
+    """Name, position, age, and per-game production for one player.
+
+    Identity comes from `player_profile`, which falls back to earlier seasons —
+    without it, an offseason valuation finds no row for the upcoming season and
+    silently prices every player at zero.
+    """
+    profile = player_profile(player_id, ctx.season)
     projection = project_player(
-        ctx.league_id, player_id, ctx.season, through_week=ctx.current_week
+        ctx.league_id,
+        player_id,
+        ctx.season,
+        through_week=ctx.current_week,
+        games_remaining=ctx.games_remaining,
     )
+
+    points_per_game = projection.points_per_game
+    position = profile.get("position") or projection.position
+    age = profile.get("age")
+
+    # Projecting across a season boundary (offseason: 2025 data, 2026 league)
+    # has to age the player. This is a PROJECTION concern, not a valuation one:
+    # a 30-year-old back will not repeat his age-29 season in either format.
+    # It is distinct from dynasty's `future`, which values later seasons.
+    seasons_ahead = ctx.season - (ctx.stats_season or ctx.season)
+    if seasons_ahead > 0 and age is not None:
+        points_per_game *= relative_multiplier(
+            position, age - seasons_ahead, seasons_ahead
+        )
+
     return {
-        "name": row.get("full_name") or player_id,
-        "position": row.get("position") or projection.position,
-        "age": row.get("age"),
-        "points_per_game": projection.points_per_game,
+        "name": profile.get("full_name") or player_id,
+        "position": position,
+        "age": age,
+        "points_per_game": round(points_per_game, 2),
         "games_remaining": projection.games_remaining,
     }
 
@@ -110,9 +138,11 @@ def roster_player_ids(roster_id: int, ctx: LeagueContext) -> list[str]:
         return []
 
     placeholders = ", ".join("?" for _ in sleeper_ids)
+    # Resolved against the latest season with data: in the offseason there are
+    # no rows for the season being valued.
     mapped = query(
         f"SELECT player_id FROM players WHERE season = ? "
         f"AND sleeper_id IN ({placeholders})",
-        [ctx.season, *[str(s) for s in sleeper_ids]],
+        [ctx.stats_season or ctx.season, *[str(s) for s in sleeper_ids]],
     )
     return [r["player_id"] for r in mapped]

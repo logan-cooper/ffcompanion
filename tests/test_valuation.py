@@ -22,24 +22,32 @@ from advisor.valuation import (
     combined_value,
     get_valuation,
 )
-from advisor.valuation.aging import aging_multiplier, projected_multiplier
+from advisor.valuation.aging import aging_multiplier, relative_multiplier
 from advisor.valuation.intent import INTENT_WEIGHTS, weigh
 from advisor.valuation.picks import PickSlot, pick_par_value
 
 SEASON = 2025
 
-# Verified against the real Wolfpack Dynasty league: an aging productive RB for
-# a younger, lower-producing WR.
-GIVE = "Christian McCaffrey"  # 29.2, ~26 pts/gm
-GET = "Marvin Harrison Jr."  # 23.1, ~15 pts/gm
+# An aging productive RB for a younger, lower-producing WR.
+GIVE = "Christian McCaffrey"  # 29.2 — win_now 41.0, future 60.4
+GET = "Tetairoa McMillan"  # 22.4 — win_now 14.4, future 122.8
+
+# Pinned by name rather than "first dynasty league": replacement level differs
+# between the two linked leagues (Beer Ball rosters 12 teams to Wolfpack's 10),
+# and a gate test that silently changes league is a gate test that proves
+# nothing.
+GATE_LEAGUE = "Wolfpack Dynasty"
 
 
 @pytest.fixture
 def dynasty_ctx(linked_leagues):
     clear_caches()
-    rows = query("SELECT league_id FROM leagues WHERE format = 'dynasty' LIMIT 1")
+    rows = query(
+        "SELECT league_id FROM leagues WHERE format = 'dynasty' AND name = ?",
+        [GATE_LEAGUE],
+    )
     if not rows:
-        pytest.skip("no dynasty league linked")
+        pytest.skip(f"{GATE_LEAGUE} not linked")
     return load_context(rows[0]["league_id"], roster_id=8, current_week=14)
 
 
@@ -106,6 +114,9 @@ def test_dynasty_gives_the_younger_player_more_future(dynasty_ctx):
 
     assert give.win_now > get.win_now  # still the better player today
     assert get.future > give.future  # but not the better asset
+    # The aging back keeps real future value — he does not fall off a cliff the
+    # moment the season ends. Zeroing him out would be as wrong as ignoring age.
+    assert give.future > 0
 
 
 def test_win_now_is_identical_across_strategies(dynasty_ctx):
@@ -205,7 +216,33 @@ def test_unknown_position_gets_no_age_penalty():
 
 def test_missing_age_does_not_crash():
     assert 0 < aging_multiplier("RB", None) <= 1.0
-    assert 0 < projected_multiplier("RB", None, 3) <= 1.0
+    assert 0 < relative_multiplier("RB", None, 3) <= 1.0
+
+
+def test_aging_is_applied_relative_to_now_not_to_peak():
+    """The curves give share-of-peak, but a projection starts from what a player
+    does today — and today's number already reflects today's age. Using the
+    absolute value would double-count the decline."""
+    # A 29-year-old back declines ~24% next year, not down to 0.44 of output.
+    one_year = relative_multiplier("RB", 29, 1)
+    assert 0.6 < one_year < 0.9
+    assert one_year > aging_multiplier("RB", 30)
+
+    # A player at peak neither gains nor loses much in one year.
+    assert relative_multiplier("QB", 28, 1) == pytest.approx(1.0)
+
+
+def test_relative_multiplier_compounds_downward():
+    assert (
+        relative_multiplier("RB", 29, 3)
+        < relative_multiplier("RB", 29, 2)
+        < relative_multiplier("RB", 29, 1)
+    )
+
+
+def test_young_players_are_not_projected_to_multiply():
+    for position in ("RB", "WR", "TE", "QB"):
+        assert relative_multiplier(position, 21, 3) <= 1.15
 
 
 # ------------------------------------------------------------------- intent

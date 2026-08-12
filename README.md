@@ -8,9 +8,9 @@ stats warehouse, so every number in an answer traces back to real data. See
 
 ## Status
 
-Phase 3b complete — stats warehouse (2023–2025), Sleeper league ingestion with
-format detection, a league-aware scoring engine, and format-aware valuation.
-No LLM calls yet.
+Phase 3c complete — stats warehouse (2023–2025), Sleeper league ingestion with
+format detection, a league-aware scoring engine, format-aware valuation, and
+year-round validity. No LLM calls yet.
 
 ## Setup
 
@@ -191,6 +191,47 @@ player already below replacement gets zero future value. That under-rates
 unproven breakout candidates, which matters most to a rebuilding team. Fixing it
 properly means modelling development upside — worth revisiting only once the
 evals in Phase 6 show it actually costs answers.
+
+## Year-round validity
+
+The app has to work in February and in week 1, not only in November. Both are
+handled by one shrinkage formula rather than season-phase branching:
+
+```
+blended = (games_this_year x current_signal + 6 x last_season_baseline)
+          / (games_this_year + 6)
+```
+
+| Week | Weight on last season | McCaffrey projection |
+|---|---|---|
+| 0 (offseason) | 100% | 11.95 |
+| 1 | 86% | 13.56 |
+| 3 | 67% | 15.73 |
+| 6 | 50% | 18.72 |
+| 17 | 27% | 21.73 |
+
+Without it, week 1 projected a full season off a single game — 23.2 pts/gm and
+a `win_now` of 201.6 from one outing.
+
+**Offseason dynasty** works because player identity resolves from the most
+recent season with data, with age advanced to the season being valued, and
+`games_remaining` returns a full slate before kickoff instead of zero.
+Previously a February valuation returned `position=None, age=None, value=0` for
+every player — dead for more than half the year, in the format that trades
+year-round.
+
+Two subtleties worth knowing:
+
+- **The prior baseline is a flat season mean**, deliberately not the
+  recency-weighted blend used within a season. Recency predicts next week
+  because it catches role changes; it does not predict next year, and the last
+  three games are the worst possible sample — week 18 is when playoff teams sit
+  starters. Weighting them priced a 24-year-old receiver at 7.3/gm instead of
+  10.7 purely because he missed the finale.
+- **Aging is applied relative to now, not to peak.** Today's production already
+  reflects today's age, so the year-over-year factor is the *ratio* between two
+  points on the curve. Using the absolute value double-counts the decline and
+  turned a 29-year-old back's realistic 24% drop into 56%.
 
 **Careful:** `team_intent` is user-set and survives re-linking, but not deleting
 `data/advisor.duckdb`. A full warehouse rebuild loses it; re-run `set-intent`.

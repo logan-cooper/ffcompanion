@@ -17,6 +17,9 @@ from advisor.scoring.engine import score_stat_line, score_stat_line_detailed
 from advisor.scoring.keys import FIRST_DOWN_KEYS, STAT_KEY_COLUMNS
 from advisor.scoring.projections import (
     OPPONENT_SWING,
+    PRIOR_STRENGTH_GAMES,
+    RECENT_WEIGHT,
+    SEASON_WEIGHT,
     opponent_adjustment,
     positional_scarcity,
     project_player,
@@ -184,8 +187,14 @@ def test_opponent_adjustment_is_bounded_and_ordered():
     assert opponent_adjustment(1) < opponent_adjustment(16) < opponent_adjustment(32)
 
 
-def test_projection_weights_recent_form_over_season_average(linked_leagues):
-    """A player who is trending up must project above their season average."""
+def test_recent_form_moves_the_current_season_signal(linked_leagues):
+    """Within a season, a player trending up must project above their flat
+    average once the prior-season anchor has faded.
+
+    Asserted on the current-season signal rather than the final number, since
+    the final number is deliberately shrunk toward last year — see
+    test_projection_leans_on_last_season_early.
+    """
     league_id = query("SELECT league_id FROM leagues WHERE format='dynasty' LIMIT 1")[0][
         "league_id"
     ]
@@ -198,14 +207,16 @@ def test_projection_weights_recent_form_over_season_average(linked_leagues):
         """,
         [SEASON],
     )
-    trending_up = [
-        p
-        for p in (project_player(league_id, r["player_id"], SEASON) for r in rows)
-        if p.recent_avg > p.season_avg
-    ]
+    projections = [project_player(league_id, r["player_id"], SEASON) for r in rows]
+    trending_up = [p for p in projections if p.recent_avg > p.season_avg]
     assert trending_up, "expected at least one improving player"
+
     for projection in trending_up:
-        assert projection.points_per_game > projection.season_avg
+        current_signal = (
+            RECENT_WEIGHT * projection.recent_avg
+            + SEASON_WEIGHT * projection.season_avg
+        )
+        assert current_signal > projection.season_avg
 
 
 def test_projection_of_a_player_with_no_games_is_zero_not_an_error(linked_leagues):

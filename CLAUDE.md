@@ -4,9 +4,10 @@
 Fantasy football AI advisor. Full plan: docs/ROADMAP.md — read it before
 starting any phase.
 
-**Status: Phase 3b complete** (warehouse 2023-2025, Sleeper leagues, scoring
-engine, format-aware valuation). Phase 4 (tool layer) is next. Don't skip
-ahead — each phase has a "Done when" test that gates the next one.
+**Status: Phase 3c complete** (warehouse 2023-2025, Sleeper leagues, scoring
+engine, format-aware valuation, year-round validity). Phase 4 (tool layer) is
+next. Don't skip ahead — each phase has a "Done when" test that gates the next
+one.
 
 ## Stack
 Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
@@ -52,6 +53,19 @@ Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
 - Valuations are floored at zero. Replacement level is free from the wire, so a
   worse player is worth nothing, never negative — otherwise the model
   recommends paying someone to take an aging star.
+- The app must work ALL YEAR, not just mid-season. Never assume the current
+  season has data: dynasty leagues trade hardest Feb-Aug, when the season being
+  valued has zero games. Resolve player identity via players.player_profile()
+  (falls back to the latest season with data, ages forward); read the season
+  phase off LeagueContext (is_offseason / current_week / stats_season), never
+  from a hardcoded default.
+- Projections shrink toward a prior-season baseline by sample size (K=6 games).
+  One formula, no season-phase branching. The prior baseline is a FLAT season
+  mean on purpose — recency predicts next week, not next year, and week 18 is
+  full of rested starters.
+- Aging is relative, not absolute: use relative_multiplier(), which is the
+  RATIO of curve points. Today's production already reflects today's age;
+  multiplying by the absolute curve value double-counts the decline.
 - Sleeper<->nflverse crosswalk goes BOTH ways: Sleeper's gsis_id is null for
   many real contributors, so available_players backfills player_id from
   players.sleeper_id. Never rely on one direction alone.

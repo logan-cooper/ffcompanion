@@ -15,7 +15,7 @@ import json
 
 from advisor.context import LeagueContext
 from advisor.db import query
-from advisor.valuation.aging import projected_multiplier
+from advisor.valuation.aging import relative_multiplier
 from advisor.valuation.base import PickValue, PlayerValue, RosterValue
 from advisor.valuation.picks import PickSlot, pick_par_value
 from advisor.valuation.redraft import (
@@ -62,7 +62,7 @@ class DynastyValuation:
         future = 0.0
         per_year: dict[str, float] = {}
         for years_ahead in range(1, HORIZON_YEARS + 1):
-            multiplier = projected_multiplier(position, age, years_ahead)
+            multiplier = relative_multiplier(position, age, years_ahead)
             season_per_game = per_game * multiplier
             # Floored per year, not on the sum: a player who ages below
             # replacement in year 3 is simply off the roster by then, worth

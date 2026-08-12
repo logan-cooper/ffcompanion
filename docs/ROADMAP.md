@@ -320,6 +320,58 @@ abstraction is real and not decorative.
 
 ---
 
+## Phase 3c — Year-round validity
+
+**Goal:** Useful in February and in week 1, not only in November.
+
+Two calendar assumptions are baked into a naive build of Phases 1–3b, and both
+make the app confidently wrong at the times people most want to use it.
+
+**The offseason problem (dynasty).** A dynasty league rolls to the next season in
+January and trades hardest between February and the rookie draft. But `players`
+is keyed `(player_id, season)`, so before the new season has any data a lookup
+finds nothing: every player resolves to `position=None, age=None` and prices at
+zero. The app is dead for more than half the year, in the format that most needs
+year-round answers.
+
+**The early-season problem (redraft).** In week 1 there is one game of evidence.
+Projecting seventeen games from it turns a fluke opener into an elite season and
+a quiet one into a bust. Meanwhile the prior seasons already sitting in the
+warehouse go unused.
+
+**Build:**
+- `players.py`: resolve identity from the most recent season at or before the
+  one being valued, and report age **as of the valuation season**. Reusing last
+  season's ages hands every roster a free year of youth — backwards for dynasty.
+- Shrinkage in `scoring/projections.py`. One formula, no season-phase branching:
+
+  ```
+  blended = (games_this_year x current_signal + K x prior_baseline)
+            / (games_this_year + K)
+  ```
+
+  At `n=0` it is purely last season; by week 17 last season contributes about a
+  quarter. `K = 6` puts the crossover near week 6.
+- The prior baseline is a **flat season mean**, deliberately not the
+  recency-weighted blend used within a season. Recency predicts next week
+  because it catches role changes; it does not predict next year, and the last
+  three games are the worst possible sample — week 18 is when playoff teams rest
+  starters.
+- `LeagueContext` gains `stats_season`, `current_week` inferred from the data
+  rather than assumed complete, and `games_remaining` that returns a full slate
+  before kickoff instead of zero.
+- Aging must be applied **relative to now**, not as share-of-peak. Today's
+  production already reflects today's age, so the year-over-year factor is the
+  ratio between two points on the curve. Using the absolute value double-counts
+  the decline — a 29-year-old back's 24% drop becomes 56%.
+
+**Done when:** an offseason dynasty context (next season, zero games played)
+returns non-zero, age-aware values for real players; a week-1 projection sits
+between that week's game and last season's baseline rather than extrapolating
+the single game; and late-season answers are unchanged.
+
+---
+
 ## Phase 4 — Tool layer (no LLM yet)
 
 **Goal:** Six pure functions, fully tested, that the model will later call.

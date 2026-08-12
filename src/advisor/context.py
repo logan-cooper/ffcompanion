@@ -23,10 +23,14 @@ from advisor.league_format import (
     MULTI_YEAR_FORMATS,
     UNKNOWN,
 )
+from advisor.players import latest_season_with_data
 
 # 2025 is the last completed season in the warehouse.
 DEFAULT_SEASON = 2025
 REGULAR_SEASON_WEEKS = 18
+
+# Games one team plays in a regular season (18 weeks, one bye).
+GAMES_PER_SEASON = 17
 
 
 @dataclass(frozen=True)
@@ -41,7 +45,12 @@ class LeagueContext:
     team_intent: str = DEFAULT_TEAM_INTENT
     roster_id: int | None = None
     total_rosters: int = 0
-    current_week: int = REGULAR_SEASON_WEEKS
+    # Weeks of `season` already played. 0 means the season has not started —
+    # which is the normal state for a dynasty league from February to September.
+    current_week: int = 0
+    # Most recent season the warehouse actually has stats for. Differs from
+    # `season` during the offseason, when we value 2026 off 2025 data.
+    stats_season: int | None = None
     scoring_settings: dict[str, Any] = field(default_factory=dict)
     roster_positions: list[str] = field(default_factory=list)
 
@@ -55,8 +64,37 @@ class LeagueContext:
         return self.format == UNKNOWN
 
     @property
+    def season_started(self) -> bool:
+        return self.current_week > 0
+
+    @property
+    def season_complete(self) -> bool:
+        return self.current_week >= REGULAR_SEASON_WEEKS
+
+    @property
+    def is_offseason(self) -> bool:
+        """No games played yet in the season being valued.
+
+        Dynasty trades happen year-round, and this is when most of them happen.
+        """
+        return not self.season_started
+
+    @property
     def games_remaining(self) -> int:
+        """Games left in `season`. A full slate before kickoff, not zero."""
+        if self.is_offseason:
+            return GAMES_PER_SEASON
         return max(0, REGULAR_SEASON_WEEKS - self.current_week)
+
+
+def weeks_completed(season: int) -> int:
+    """Regular-season weeks with stats for `season`. 0 before kickoff."""
+    rows = query(
+        "SELECT MAX(week) AS week FROM player_week_stats "
+        "WHERE season = ? AND season_type = 'REG'",
+        [season],
+    )
+    return rows[0]["week"] or 0 if rows else 0
 
 
 def load_context(
@@ -88,16 +126,25 @@ def load_context(
         if intent_rows:
             intent = intent_rows[0]["intent"]
 
+    resolved_season = season or league["season"] or DEFAULT_SEASON
+
     return LeagueContext(
         league_id=league["league_id"],
-        season=season or league["season"] or DEFAULT_SEASON,
+        season=resolved_season,
         name=league["name"] or "",
         format=league["format"] or UNKNOWN,
         superflex=bool(league["superflex"]),
         team_intent=intent,
         roster_id=roster_id,
         total_rosters=league["total_rosters"] or 0,
-        current_week=current_week if current_week is not None else REGULAR_SEASON_WEEKS,
+        # Inferred from the data rather than assumed complete, so the same code
+        # works in March, in week 2, and in December.
+        current_week=(
+            current_week
+            if current_week is not None
+            else weeks_completed(resolved_season)
+        ),
+        stats_season=latest_season_with_data(resolved_season),
         scoring_settings=json.loads(league["scoring_settings"] or "{}"),
         roster_positions=json.loads(league["roster_positions"] or "[]"),
     )

@@ -85,8 +85,28 @@ def aging_multiplier(position: str | None, age: float | None) -> float:
     return value_lo + fraction * (value_hi - value_lo)
 
 
-def projected_multiplier(position: str | None, age: float | None, years_ahead: int) -> float:
-    """Aging multiplier `years_ahead` seasons from now."""
+# A young player's curve still rises; cap the upside so a 21-year-old is not
+# projected to multiply his production.
+MAX_IMPROVEMENT = 1.15
+
+
+def relative_multiplier(
+    position: str | None, age: float | None, years_ahead: int
+) -> float:
+    """Production `years_ahead` from now, **relative to now**.
+
+    The curves above give share-of-peak, but a projection starts from what a
+    player is doing *today* — and today's number already reflects today's age.
+    Applying the absolute curve value would double-count the decline: a
+    29-year-old back at 0.58 would be projected at 0.44 of his current output
+    next season, a 24% drop mis-stated as 56%. The year-over-year change is the
+    ratio between the two points on the curve.
+    """
     if age is None:
         return UNKNOWN_AGE_MULTIPLIER ** max(1, years_ahead)
-    return aging_multiplier(position, age + years_ahead)
+
+    now = aging_multiplier(position, age)
+    later = aging_multiplier(position, age + years_ahead)
+    if now <= 0:
+        return 0.0
+    return min(later / now, MAX_IMPROVEMENT)
