@@ -159,13 +159,22 @@ def _load_player_week_stats(
             passing_interceptions AS interceptions,
             carries, rushing_yards, rushing_tds,
             receptions, targets, receiving_yards, receiving_tds,
+            COALESCE(sack_fumbles, 0)
+                + COALESCE(rushing_fumbles, 0)
+                + COALESCE(receiving_fumbles, 0) AS fumbles,
             COALESCE(sack_fumbles_lost, 0)
                 + COALESCE(rushing_fumbles_lost, 0)
                 + COALESCE(receiving_fumbles_lost, 0) AS fumbles_lost,
             passing_2pt_conversions,
             rushing_2pt_conversions,
             receiving_2pt_conversions,
-            special_teams_tds
+            special_teams_tds,
+            passing_first_downs,
+            rushing_first_downs,
+            receiving_first_downs,
+            passing_40,
+            rushing_40,
+            receiving_40
         FROM read_parquet(?)
         WHERE season = ? AND player_id IS NOT NULL{clause}
         """,

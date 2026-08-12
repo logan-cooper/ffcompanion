@@ -8,8 +8,8 @@ stats warehouse, so every number in an answer traces back to real data. See
 
 ## Status
 
-Phase 2 complete — stats warehouse (2023–2025) plus Sleeper league ingestion
-with format detection. No scoring engine yet, no LLM calls.
+Phase 3 complete — stats warehouse (2023–2025), Sleeper league ingestion with
+format detection, and a league-aware scoring engine. No LLM calls yet.
 
 ## Setup
 
@@ -33,6 +33,7 @@ make test
 | `make ingest SEASONS=2023,2024,2025` | Load several |
 | `make status` | Show what has been ingested and when |
 | `make link-league USERNAME=you SEASON=2025` | Pull your Sleeper leagues |
+| `make verify-scoring` | Check scoring against points Sleeper actually recorded |
 | `make chat` | Conversational REPL (Phase 5) |
 | `make eval` | Eval suite (Phase 6) |
 | `make clean` | Remove the local database, caches, and build artifacts |
@@ -97,6 +98,53 @@ to `unknown` — which the app must treat as "ask the user", never as a default.
 `team_intent` (contend / rebuild / balanced) is **user-set, never inferred**, and
 lives in its own table so re-linking a league cannot wipe it. Set it with
 `advisor set-intent --league-id X --roster-id N --intent contend`.
+
+## Scoring
+
+`score_stat_line(raw_stats, scoring_settings, position=...)` reads the league's
+own rules. Nothing about PPR, touchdown values, or bonuses is hard-coded — the
+three linked leagues pay 4, 6, and 6 points per passing touchdown, and two score
+first downs and 40+ yard plays that the third does not.
+
+**Validated against reality, not against itself.** Sleeper publishes its own
+computed points per player per week, so `make verify-scoring` scores every
+warehouse stat line and diffs it:
+
+```
+814 survival            2065/2071  =  99.71%
+Beer Ball Empire        4052/4137  =  97.95%
+Wolfpack Dynasty        3809/3820  =  99.71%
+TOTAL                   9926/10028 =  98.98% exact
+```
+
+Run it after touching [scoring/keys.py](src/advisor/scoring/keys.py) — a wrong
+entry there yields plausible numbers that are quietly wrong, which no unit test
+over hand-written stat lines will catch. It is how the touchdown/first-down rule
+below was found.
+
+Two things that check caught:
+
+- **A touchdown is a first down to nflverse, but not to Sleeper.** Unadjusted,
+  this over-scores every scoring play by one first down — 744 wrong player-weeks
+  in one league. Fixing it moved that league from 66.5% to 97.9%.
+- **`special_teams_tds` was missing entirely** (found in Phase 1 by the same
+  method against nflverse's own PPR figure): 27 return touchdowns, each a silent
+  6-point error.
+
+The residual ~1% is a stat-source difference, not a mapping bug: Sleeper's feed
+records fumbles on plays nflverse does not attribute to the player. `pass_int_td`
+(a pick-six charged to the quarterback) is not derivable from weekly stats and is
+reported as unsupported rather than silently skipped.
+
+Projections are **deliberately dumb** — 60% trailing-3-game average, 40% season
+average, opponent adjustment capped at ±15%. No model. Every knob is a named
+constant, because a heuristic that can be explained in one sentence beats a
+better-fitting one that cannot.
+
+`positional_scarcity()` derives replacement level from the league's own
+`roster_positions` × team count. Superflex is visible in the output: QB
+replacement runs ~16–18 pts/gm against ~10–12 for RB/WR/TE, which is why a
+superflex slot moves QB value more than any other setting.
 
 **No fantasy points are stored anywhere.** Points depend on a league's scoring
 settings and are computed at query time in Phase 3. nflverse publishes

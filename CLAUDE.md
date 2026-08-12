@@ -4,9 +4,9 @@
 Fantasy football AI advisor. Full plan: docs/ROADMAP.md — read it before
 starting any phase.
 
-**Status: Phase 2 complete** (stats warehouse 2023-2025 + Sleeper leagues).
-Phase 3 (scoring engine) is next. Don't skip ahead — each phase has a
-"Done when" test that gates the next one.
+**Status: Phase 3 complete** (warehouse 2023-2025, Sleeper leagues, scoring
+engine). Phase 3b (format-aware valuation) is next. Don't skip ahead — each
+phase has a "Done when" test that gates the next one.
 
 ## Stack
 Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
@@ -20,11 +20,15 @@ Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
 - Raw stat tables store counting stats only — no fantasy_points column.
   Scoring is computed per-league at query time (src/advisor/scoring/).
 - Every tool takes league_id and returns a data_as_of field.
-- nflverse column names are NOT Sleeper stat keys. The mapping lives in
-  src/advisor/warehouse/ingest.py (ingestion) and scoring/ (Phase 3); it is the
-  most likely source of subtle wrong-number bugs. Notably: passing_interceptions
-  -> interceptions, and fumbles_lost is the sum of sack/rushing/receiving
-  fumbles lost.
+- nflverse column names are NOT Sleeper stat keys. The mapping lives in ONE
+  place, src/advisor/scoring/keys.py, and is the most likely source of subtle
+  wrong-number bugs. After editing it run `make verify-scoring`, which diffs
+  every warehouse stat line against the points Sleeper actually recorded
+  (~10k player-weeks, currently 98.98% exact). Unit tests over hand-written
+  stat lines will NOT catch a bad mapping.
+- A touchdown is a first down to nflverse but NOT to Sleeper. Any first-down
+  scoring key must subtract touchdowns. This was 744 wrong player-weeks in one
+  league before it was caught.
 - Capture dynasty fields (age, draft position, experience) at ingest even for
   redraft. They cannot be backfilled without re-ingesting.
 - The warehouse holds 2023-2025, because one season misreads any player who was

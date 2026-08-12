@@ -63,11 +63,20 @@ TABLES: dict[str, str] = {
             targets                  INTEGER,
             receiving_yards          DOUBLE,
             receiving_tds            INTEGER,
-            fumbles_lost             INTEGER,
+            fumbles                  INTEGER,  -- all fumbles (Sleeper `fum`)
+            fumbles_lost             INTEGER,  -- lost only (Sleeper `fum_lost`)
             passing_2pt_conversions  INTEGER,
             rushing_2pt_conversions  INTEGER,
             receiving_2pt_conversions INTEGER,
             special_teams_tds        INTEGER,  -- kick/punt return TDs
+            -- Needed by real league scoring: first-down and 40+ yard bonuses
+            -- are common enough that omitting them makes points quietly wrong.
+            passing_first_downs      INTEGER,
+            rushing_first_downs      INTEGER,
+            receiving_first_downs    INTEGER,
+            passing_40               INTEGER,  -- completions of 40+ yards
+            rushing_40               INTEGER,  -- rushes of 40+ yards
+            receiving_40             INTEGER,  -- receptions of 40+ yards
             PRIMARY KEY (player_id, season, week, season_type)
         )
     """,
@@ -221,7 +230,14 @@ VIEWS: dict[str, str] = {
             SUM(s.targets)                AS targets,
             SUM(s.receiving_yards)        AS receiving_yards,
             SUM(s.receiving_tds)          AS receiving_tds,
+            SUM(s.fumbles)                AS fumbles,
             SUM(s.fumbles_lost)           AS fumbles_lost,
+            SUM(s.passing_first_downs)    AS passing_first_downs,
+            SUM(s.rushing_first_downs)    AS rushing_first_downs,
+            SUM(s.receiving_first_downs)  AS receiving_first_downs,
+            SUM(s.passing_40)             AS passing_40,
+            SUM(s.rushing_40)             AS rushing_40,
+            SUM(s.receiving_40)           AS receiving_40,
             SUM(s.passing_2pt_conversions)   AS passing_2pt_conversions,
             SUM(s.rushing_2pt_conversions)   AS rushing_2pt_conversions,
             SUM(s.receiving_2pt_conversions) AS receiving_2pt_conversions,

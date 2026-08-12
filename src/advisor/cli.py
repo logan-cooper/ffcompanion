@@ -97,6 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--refresh", action="store_true", help="Re-download the Sleeper player dump."
     )
 
+    verify = subparsers.add_parser(
+        "verify-scoring",
+        help="Check scored points against what Sleeper actually recorded.",
+    )
+    verify.add_argument("--season", type=int, default=2025)
+
     intent = subparsers.add_parser(
         "set-intent",
         help="Record how a team is playing the season (contend/rebuild/balanced).",
@@ -258,6 +264,20 @@ def _cmd_link_league(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_verify_scoring(args: argparse.Namespace) -> int:
+    from advisor.scoring.validate import validate_all
+
+    results = validate_all(args.season)
+    print(f"Scoring vs points Sleeper recorded, {args.season}:\n")
+    for result in results:
+        print(result)
+
+    compared = sum(r.compared for r in results)
+    exact = sum(r.exact for r in results)
+    print(f"\nTOTAL {exact}/{compared} = {exact / max(compared, 1):.2%} exact")
+    return 0
+
+
 def _cmd_set_intent(args: argparse.Namespace) -> int:
     from advisor.warehouse.leagues import set_team_intent
 
@@ -278,6 +298,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_status(args)
     if args.command == "link-league":
         return _cmd_link_league(args)
+    if args.command == "verify-scoring":
+        return _cmd_verify_scoring(args)
     if args.command == "set-intent":
         return _cmd_set_intent(args)
 
