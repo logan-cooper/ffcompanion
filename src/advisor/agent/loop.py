@@ -130,11 +130,17 @@ def run_turn(
     *,
     verbose: bool = False,
     on_event: Callable[[str], None] = lambda _: None,
+    on_token: Callable[[str], None] | None = None,
+    on_tool: Callable[[str], None] | None = None,
 ) -> Turn:
     """Run one user message to completion, mutating `messages` with the history.
 
     `messages` is the running conversation and is updated in place so the caller
     keeps full history across turns.
+
+    Pass `on_token` to stream the answer as it is generated, and `on_tool` to be
+    told which tool is running. Both exist for the web UI: a local turn takes
+    tens of seconds, and silence for that long reads as a hang.
     """
     system = build_system_prompt(ctx)
     turn = Turn(text="")
@@ -144,7 +150,13 @@ def run_turn(
         turn.iterations = iteration
 
         try:
-            reply: Reply = backend.chat(system, messages, TOOLS)
+            # Stream only when someone is listening, and only when the backend
+            # can — the Backend protocol guarantees chat(), not chat_stream().
+            streamer = getattr(backend, "chat_stream", None)
+            if on_token is not None and streamer is not None:
+                reply: Reply = streamer(system, messages, TOOLS, on_token)
+            else:
+                reply = backend.chat(system, messages, TOOLS)
         except BackendError as exc:
             turn.errors.append(str(exc))
             turn.text = f"The model backend failed:\n{exc}"
@@ -178,6 +190,8 @@ def run_turn(
 
         for call in reply.tool_calls:
             turn.tool_calls.append((call.name, call.arguments))
+            if on_tool is not None:
+                on_tool(call.name)
             if verbose:
                 on_event(f"  -> {call.name}({json.dumps(call.arguments, default=str)})")
 

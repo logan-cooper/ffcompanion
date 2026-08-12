@@ -4,14 +4,20 @@
 Fantasy football AI advisor. Full plan: docs/ROADMAP.md — read it before
 starting any phase.
 
-**Status: Phase 5 complete, Phase 6 model choice made** (warehouse 2023-2025,
-Sleeper leagues, scoring engine, format-aware valuation, year-round validity,
-six-tool layer, local agent loop + eval harness). **The model is qwen3:8b with thinking
-OFF** — 12/12, 100% grounding, 4.3 min; evidence and runners-up in
-docs/ROADMAP.md Phase 6. Next: format-paired evals. Every case so far ran
-against ONE dynasty league, so redraft and survival are unexercised through the
-agent and Phase 3b's whole point (dynasty and redraft must answer differently)
-is unverified end to end. Don't skip ahead — each phase has a "Done when" test
+**Status: Phases 5-7 complete** (warehouse 2023-2025, Sleeper leagues, scoring
+engine, format-aware valuation, year-round validity, six-tool layer, local agent
+loop, eval harness, local web UI). **The model is qwen3:8b with thinking OFF** —
+18/18, 100% grounding, 9.0 min; evidence and runners-up in docs/ROADMAP.md
+Phase 6. Evals now cover format pairing (dynasty vs redraft answer differently,
+proven end to end) and season phase (offseason, week 2, week 18).
+
+Known gaps, both deliberate: the survival format has never been exercised
+through the agent, and `intent_direction_on_compare` tracks a model that
+sometimes reasons backwards about rebuild intent on compare_players — a
+weighted field was tried there and REGRESSED the paired trade case, so do not
+re-add one by symmetry with evaluate_trade.
+
+Next: Phase 8, packaging. Don't skip ahead — each phase has a "Done when" test
 that gates the next one.
 
 ## Stack
@@ -48,6 +54,20 @@ no API key, no per-token cost, anywhere in this project.
   Always flush progress output, and send it to STDERR — progress on stdout means
   `eval --json > file` swallows every sign of life and a working run is
   indistinguishable from a hung one.
+- The web layer binds to 127.0.0.1 and that is a product decision, not a
+  limitation: serve other people from one machine and that machine's GPU is
+  doing everyone's inference, which is the cost model this project pivoted away
+  from. No public bind, no auth, no Docker.
+- The web layer is STATELESS — every request reloads its conversation from
+  DuckDB (src/advisor/warehouse/conversations.py), so a refresh, a second tab
+  and a restart all behave the same. Chat history is user-owned data like
+  team_intent: re-ingesting stats must never touch it.
+- run_turn blocks, so /chat runs it on a thread and drains a queue. Collecting
+  tokens and emitting them at the end is a spinner wearing a stream's clothes —
+  the user still waits the whole turn.
+- The web module is `advisor.web.server`, NOT `advisor.web.app` — `app` is the
+  FastAPI instance re-exported from __init__, and having both made
+  `monkeypatch.setattr("advisor.web.app...")` resolve to the instance.
 - Reasoning is OFF (THINKING=false). Measured on qwen3:8b: 12/12 in 4.3 min off
   vs 11/12 in 15.1 min on — better AND faster, which is not the intuition.
   Re-check on any new model; it's a property of qwen3, not a law.
@@ -131,6 +151,7 @@ make tools-demo           # all six tools, dynasty vs redraft, same args
 make chat                 # local REPL; needs `ollama serve` running
 make eval MODEL=qwen3:8b  # eval suite; 15-20 min, this is how a model gets picked
 make eval-compare MODELS=a,b,c   # scoreboard across models; ~15 min each
+make serve                # web UI at http://127.0.0.1:8000; needs `ollama serve`
 
 Eval progress goes to STDERR, so `eval --json > out.json` still shows live
 progress. eval-compare saves each model to evals/results/ as it finishes and

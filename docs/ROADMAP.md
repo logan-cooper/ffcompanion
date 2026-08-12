@@ -1007,6 +1007,35 @@ paying for that machine's GPU.
 **Done when:** a fresh clone plus `make serve` gives a working chat app at
 `localhost:8000`, with no API key of any kind.
 
+### Built (2026-08-12)
+
+`make serve` → `http://127.0.0.1:8000`. `GET /health`, `GET /data-status`,
+`GET|DELETE /conversations`, `POST /chat` (SSE). One HTML file, vanilla JS, no
+build step and no outbound requests — asserted by a test, so a CDN link cannot
+creep in.
+
+**Streaming is real, not cosmetic.** `run_turn` blocks, so `/chat` runs it on a
+thread and drains a queue; the first version collected tokens and emitted them
+at the end, which is a spinner wearing a stream's clothes — the user still waits
+the whole turn. Tool events stream too, because "which numbers came from where"
+is this app's premise, not decoration.
+
+`OllamaBackend.chat_stream` was added beside `chat`, both parsing responses
+through one `_to_reply` so a tool call cannot be read one way streamed and
+another way not. The loop streams only when someone passes `on_token` AND the
+backend offers `chat_stream` — the `Backend` protocol still guarantees only
+`chat`.
+
+**Two bugs from inventing identifiers**, both caught by running the SQL rather
+than reading it: a `rosters` table (it is `league_rosters`) and a `rows` column
+(it is `row_count`). Fixed by reusing the CLI's `_pick_league` instead of
+writing a second league picker, and by a test that executes `/data-status`
+against the real schema.
+
+**The module is `advisor.web.server`, not `app`.** With both a module named
+`app` and a re-exported FastAPI instance named `app`, `advisor.web.app`
+resolved to the instance and monkeypatching failed confusingly.
+
 ---
 
 ## Phase 8 — Packaging and distribution

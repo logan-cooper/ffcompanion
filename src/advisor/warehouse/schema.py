@@ -208,6 +208,34 @@ TABLES: dict[str, str] = {
             PRIMARY KEY (league_id, roster_id)
         )
     """,
+    # Chat history for the web UI. User-owned like team_intent, so re-ingesting
+    # stats or re-linking a league must never touch it. The HTTP layer is
+    # stateless — every request reloads the thread from here — which is what
+    # lets a page refresh keep the conversation.
+    "conversations": """
+        CREATE TABLE IF NOT EXISTS conversations (
+            conversation_id VARCHAR PRIMARY KEY,
+            league_id       VARCHAR NOT NULL,
+            roster_id       INTEGER,
+            title           VARCHAR,
+            created_at      TIMESTAMP NOT NULL,
+            updated_at      TIMESTAMP NOT NULL
+        )
+    """,
+    "messages": """
+        CREATE TABLE IF NOT EXISTS messages (
+            conversation_id VARCHAR NOT NULL,
+            seq             INTEGER NOT NULL,
+            role            VARCHAR NOT NULL,  -- user|assistant
+            content         VARCHAR NOT NULL,
+            -- What the assistant called to produce this, for the UI's trace
+            -- panel. Kept because "which numbers came from where" is the whole
+            -- premise of the app.
+            tools_used      VARCHAR,
+            created_at      TIMESTAMP NOT NULL,
+            PRIMARY KEY (conversation_id, seq)
+        )
+    """,
 }
 
 VIEWS: dict[str, str] = {

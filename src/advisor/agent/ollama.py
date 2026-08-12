@@ -91,6 +91,45 @@ def _coerce_arguments(raw: Any) -> dict[str, Any]:
     return {}
 
 
+def _to_reply(body: dict[str, Any], message: dict[str, Any]) -> Reply:
+    """Build a Reply from a finished response, streamed or not.
+
+    Shared so the two paths cannot drift: a tool call parsed one way in
+    streaming and another way outside it would be a genuinely nasty bug.
+    """
+    calls = []
+    for index, call in enumerate(message.get("tool_calls") or []):
+        function = call.get("function") or {}
+        name = function.get("name")
+        if not name:
+            continue
+        calls.append(
+            ToolCall(
+                # Ollama does not always assign an id; the loop needs one to
+                # pair results with calls, so synthesise a stable fallback.
+                id=str(call.get("id") or f"call_{index}"),
+                name=name,
+                arguments=_coerce_arguments(function.get("arguments")),
+            )
+        )
+
+    return Reply(
+        text=(message.get("content") or "").strip(),
+        tool_calls=tuple(calls),
+        prompt_tokens=int(body.get("prompt_eval_count") or 0),
+        completion_tokens=int(body.get("eval_count") or 0),
+        detail={
+            "done_reason": body.get("done_reason"),
+            # Reasoning models (qwen3 among them) return their scratchpad in a
+            # separate field. Useful under --verbose, but it is NOT the answer —
+            # never render it to the user as one.
+            "thinking": (message.get("thinking") or "").strip(),
+            "load_ms": int((body.get("load_duration") or 0) / 1_000_000),
+            "total_ms": int((body.get("total_duration") or 0) / 1_000_000),
+        },
+    )
+
+
 class OllamaBackend:
     """Chat completions against a local Ollama server."""
 
@@ -160,16 +199,18 @@ class OllamaBackend:
 
     # -------------------------------------------------------------------- chat
 
-    def chat(
+    def _payload(
         self,
         system: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
-    ) -> Reply:
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}, *messages],
-            "stream": False,
+            "stream": stream,
             "think": self.think,
             "keep_alive": KEEP_ALIVE,
             "options": {
@@ -180,6 +221,15 @@ class OllamaBackend:
         }
         if tools:
             payload["tools"] = to_ollama_tools(tools)
+        return payload
+
+    def chat(
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> Reply:
+        payload = self._payload(system, messages, tools, stream=False)
 
         try:
             response = requests.post(
@@ -198,35 +248,72 @@ class OllamaBackend:
         except ValueError as exc:
             raise BackendError("Ollama returned a non-JSON response") from exc
 
-        message = body.get("message") or {}
-        calls = []
-        for index, call in enumerate(message.get("tool_calls") or []):
-            function = call.get("function") or {}
-            name = function.get("name")
-            if not name:
-                continue
-            calls.append(
-                ToolCall(
-                    # Ollama does not always assign an id; the loop needs one to
-                    # pair results with calls, so synthesise a stable fallback.
-                    id=str(call.get("id") or f"call_{index}"),
-                    name=name,
-                    arguments=_coerce_arguments(function.get("arguments")),
-                )
+        return _to_reply(body, body.get("message") or {})
+
+    def chat_stream(
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        on_token,
+    ) -> Reply:
+        """Same call, with content forwarded chunk by chunk as it arrives.
+
+        Streaming matters more locally than it would against a hosted API: a
+        turn takes tens of seconds, and a spinner that long reads as broken
+        where the same wait with text appearing does not.
+
+        Every iteration streams, including ones that turn out to be tool calls.
+        A model's preamble ("let me look that up") is worth showing, and the
+        alternative — waiting to find out whether tool_calls appear before
+        forwarding anything — gives back the latency streaming was for.
+        """
+        payload = self._payload(system, messages, tools, stream=True)
+
+        try:
+            response = requests.post(
+                f"{self.host}/api/chat",
+                json=payload,
+                timeout=REQUEST_TIMEOUT,
+                stream=True,
+            )
+        except requests.RequestException as exc:
+            raise BackendError(f"Ollama request failed: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise BackendError(
+                f"Ollama returned {response.status_code}: {response.text[:400]}"
             )
 
-        return Reply(
-            text=(message.get("content") or "").strip(),
-            tool_calls=tuple(calls),
-            prompt_tokens=int(body.get("prompt_eval_count") or 0),
-            completion_tokens=int(body.get("eval_count") or 0),
-            detail={
-                "done_reason": body.get("done_reason"),
-                # Reasoning models (qwen3 among them) return their scratchpad
-                # in a separate field. Useful under --verbose, but it is NOT the
-                # answer — never render it to the user as one.
-                "thinking": (message.get("thinking") or "").strip(),
-                "load_ms": int((body.get("load_duration") or 0) / 1_000_000),
-                "total_ms": int((body.get("total_duration") or 0) / 1_000_000),
-            },
-        )
+        # Ollama streams newline-delimited JSON, one object per chunk, with the
+        # final object carrying the token counts and timings.
+        content: list[str] = []
+        thinking: list[str] = []
+        tool_calls: list[dict] = []
+        final: dict[str, Any] = {}
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+            except ValueError:
+                continue  # a partial line is not worth failing a whole turn over
+
+            message = chunk.get("message") or {}
+            if piece := message.get("content"):
+                content.append(piece)
+                on_token(piece)
+            if piece := message.get("thinking"):
+                thinking.append(piece)
+            if calls := message.get("tool_calls"):
+                tool_calls.extend(calls)
+            if chunk.get("done"):
+                final = chunk
+
+        assembled = {
+            "content": "".join(content),
+            "thinking": "".join(thinking),
+            "tool_calls": tool_calls,
+        }
+        return _to_reply(final, assembled)
