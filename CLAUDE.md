@@ -4,10 +4,10 @@
 Fantasy football AI advisor. Full plan: docs/ROADMAP.md — read it before
 starting any phase.
 
-**Status: Phase 3c complete** (warehouse 2023-2025, Sleeper leagues, scoring
-engine, format-aware valuation, year-round validity). Phase 4 (tool layer) is
-next. Don't skip ahead — each phase has a "Done when" test that gates the next
-one.
+**Status: Phase 4 complete** (warehouse 2023-2025, Sleeper leagues, scoring
+engine, format-aware valuation, year-round validity, six-tool layer). Phase 5
+(agent loop) is next — the first phase that makes LLM calls. Don't skip ahead:
+each phase has a "Done when" test that gates the next one.
 
 ## Stack
 Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
@@ -17,7 +17,17 @@ Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
 - All database access goes through src/advisor/db.py, which exposes exactly
   get_conn() and query() — no direct DuckDB imports anywhere else. query()
   handles writes too and returns [] when there's no result set.
-- Tools (src/advisor/tools/) return data only, never prose or opinions.
+- Tools (src/advisor/tools/) return data only, never prose or opinions, and
+  evaluate_trade returns NO verdict. Every response carries the same envelope
+  (format, intent, season phase, stats_from_season, data_as_of) — the model
+  cannot be trusted to remember the system prompt twelve turns later.
+- Tools NEVER branch on format. Ask get_valuation(ctx) and report what it
+  returns; signatures must be identical in redraft and dynasty. `make
+  tools-demo` runs all six under both with the same args to prove it.
+- Label zeroes that could read as verdicts. With no games left win_now is 0 for
+  everyone by arithmetic; unlabelled that looks like a judgement on the player.
+- Truncate by PRIORITY, not by list length. Dropping whichever list is longest
+  removes starters from a deep roster, and a lineup question needs them.
 - Raw stat tables store counting stats only — no fantasy_points column.
   Scoring is computed per-league at query time (src/advisor/scoring/).
 - Every tool takes league_id and returns a data_as_of field.
@@ -77,6 +87,8 @@ make warehouse            # build the full warehouse, 2023-2025, one command
 make ingest SEASON=2025   # single season (idempotent, cached)
 make status               # what's ingested and when
 make link-league USERNAME=cooper257 SEASON=2025
+make verify-scoring       # scoring vs points Sleeper actually recorded
+make tools-demo           # all six tools, dynasty vs redraft, same args
 make chat                 # local CLI — Phase 5, not built yet
 make eval                 # Phase 6, not built yet
 

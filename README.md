@@ -8,9 +8,9 @@ stats warehouse, so every number in an answer traces back to real data. See
 
 ## Status
 
-Phase 3c complete — stats warehouse (2023–2025), Sleeper league ingestion with
-format detection, a league-aware scoring engine, format-aware valuation, and
-year-round validity. No LLM calls yet.
+Phase 4 complete — stats warehouse (2023–2025), Sleeper league ingestion with
+format detection, a league-aware scoring engine, format-aware valuation,
+year-round validity, and the six-tool layer. No LLM calls yet.
 
 ## Setup
 
@@ -35,6 +35,7 @@ make test
 | `make status` | Show what has been ingested and when |
 | `make link-league USERNAME=you SEASON=2025` | Pull your Sleeper leagues |
 | `make verify-scoring` | Check scoring against points Sleeper actually recorded |
+| `make tools-demo` | Print all six tools under both a dynasty and a redraft context |
 | `make chat` | Conversational REPL (Phase 5) |
 | `make eval` | Eval suite (Phase 6) |
 | `make clean` | Remove the local database, caches, and build artifacts |
@@ -232,6 +233,45 @@ Two subtleties worth knowing:
   reflects today's age, so the year-over-year factor is the *ratio* between two
   points on the curve. Using the absolute value double-counts the decline and
   turned a 29-year-old back's realistic 24% drop into 56%.
+
+## Tools
+
+Six pure functions the model will call in Phase 5. Each takes `league_id`,
+returns a JSON-serialisable dict, and caps its own output.
+
+| Tool | Purpose |
+|---|---|
+| `resolve_player` | Name → candidate player_ids. Called first for any named player |
+| `get_my_roster` | One team in depth: slots, form, age, win-now/future, picks |
+| `get_league_rosters` | All teams, compact: positional strength and roster age |
+| `compare_players` | ≤4 players: weekly points, usage, upcoming matchup, values |
+| `get_available_players` | Free agents ranked on recent form, with trending adds |
+| `evaluate_trade` | Point deltas for both sides. Players and picks. **No verdict** |
+
+**Tools never branch on format.** They ask `get_valuation(ctx)` and report what
+comes back, which is what keeps signatures identical across redraft and dynasty.
+`make tools-demo` proves it by running all six with the *same arguments* under
+both, e.g. the same trade:
+
+| | `win_now_delta` | `future_delta` | intent-weighted |
+|---|---|---|---|
+| dynasty | −37.8 | **+42.95** | **+26.8** (a gain) |
+| redraft | −37.8 | 0.0 | **−37.8** (a loss) |
+
+Every response carries the same envelope: league format, team intent, where in
+the season we are, which season the stats came from, and when the data was
+fetched. Echoing that back on every call is cheaper and more reliable than
+hoping the model remembers the system prompt twelve turns later.
+
+Two details that exist to stop the model misreading a number:
+
+- **A completed season labels its own zeroes.** With no games left, `win_now` is
+  0 for everyone by arithmetic. Unlabelled, `win_now: 0.0` beside an elite
+  receiver reads as a verdict, so the envelope says so explicitly.
+- **Truncation follows priority, not length.** Responses are capped near 1500
+  tokens; a 30-player dynasty roster overruns it. Trimming whichever list is
+  longest would drop starters, so the least decision-relevant lists (IR, taxi,
+  picks, bench) are emptied first and starters go last.
 
 **Careful:** `team_intent` is user-set and survives re-linking, but not deleting
 `data/advisor.duckdb`. A full warehouse rebuild loses it; re-run `set-intent`.

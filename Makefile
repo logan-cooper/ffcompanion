@@ -8,7 +8,7 @@ SEASONS ?= $(SEASON)
 ALL_SEASONS ?= 2023,2024,2025
 
 .DEFAULT_GOAL := help
-.PHONY: help sync test ingest warehouse status link-league verify-scoring chat eval clean
+.PHONY: help sync test ingest warehouse status link-league verify-scoring tools-demo chat eval clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) \
@@ -35,6 +35,9 @@ link-league: ## Link Sleeper leagues — make link-league USERNAME=you SEASON=20
 
 verify-scoring: ## Check scored points against what Sleeper actually recorded
 	$(UV) run python -m advisor.cli verify-scoring --season $(SEASON)
+
+tools-demo: ## Print all six tools under both a dynasty and a redraft context
+	$(UV) run python -m advisor.cli tools-demo
 
 chat: ## Start the conversational REPL (Phase 5)
 	@echo "make chat lands in Phase 5 (agent loop)."

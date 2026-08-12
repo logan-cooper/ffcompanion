@@ -103,6 +103,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument("--season", type=int, default=2025)
 
+    demo = subparsers.add_parser(
+        "tools-demo",
+        help="Run all six tools under both a dynasty and a redraft context.",
+    )
+    demo.add_argument("--league-id", default=None)
+    demo.add_argument("--roster-id", type=int, default=None)
+
     intent = subparsers.add_parser(
         "set-intent",
         help="Record how a team is playing the season (contend/rebuild/balanced).",
@@ -278,6 +285,12 @@ def _cmd_verify_scoring(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_tools_demo(args: argparse.Namespace) -> int:
+    from advisor.tools.demo import run_demo
+
+    return run_demo(args.league_id, args.roster_id)
+
+
 def _cmd_set_intent(args: argparse.Namespace) -> int:
     from advisor.warehouse.leagues import set_team_intent
 
@@ -300,6 +313,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_link_league(args)
     if args.command == "verify-scoring":
         return _cmd_verify_scoring(args)
+    if args.command == "tools-demo":
+        return _cmd_tools_demo(args)
     if args.command == "set-intent":
         return _cmd_set_intent(args)
 
