@@ -50,11 +50,25 @@ DEFAULT_MAX_SECONDS = 120
 # costs (0.785 -> "79%"), plus slack for binary floating point.
 PERCENT_TOLERANCE = 0.0051
 
-# Phrases that indicate the model committed to a choice.
-PICK_MARKERS = (
-    "start", "i'd", "i would", "recommend", "go with", "pick", "choose",
-    "better", "accept", "decline", "yes", "no", "hold", "trade", "keep",
+# Refusing to choose. These are the actual failure — a survey of the options
+# with the decision handed back to the user.
+HEDGE_MARKERS = (
+    "it depends", "depends on", "both are", "both have", "either could",
+    "either one", "hard to say", "up to you", "your call", "toss-up",
+    "toss up", "personal preference", "no clear", "consider your",
 )
+
+# Committing to one. Deliberately broad, and only ever used to OVERRIDE a hedge
+# — never as the test itself. A vocabulary list cannot decide whether a model
+# answered; "Prioritize Ray Davis" matched none of the original fifteen words
+# and was scored as giving no recommendation.
+DECISION_MARKERS = (
+    "i'd", "i would", "recommend", "go with", "pick", "choose", "prioriti",
+    "best", "start ", "accept", "decline", "hold", "keep", "target", "add ",
+    "drop ", "sit ", "take ", "edge", "over ", "instead", "the answer",
+)
+
+NAME_IN_TOOL_RESULT = re.compile(r'"name":\s*"([^"]{3,40})"')
 
 
 @dataclass
@@ -124,6 +138,34 @@ def _tool_corpus(messages: list[dict[str, Any]]) -> str:
     return "\n".join(m.get("content", "") for m in messages if m.get("role") == "tool")
 
 
+def _recommendation_failures(answer: str, corpus: str) -> list[str]:
+    """Did the model actually choose something?
+
+    Tested behaviourally, because vocabulary does not work here: the model wrote
+    "Prioritize Ray Davis" and a fifteen-word marker list scored it as giving no
+    recommendation. What a real answer does is **name one of the options the
+    tools returned** — which ties the check to the data rather than to phrasing,
+    and is the same instinct as the grounding assertion.
+
+    Hedging is then the separate failure: naming the candidates and handing the
+    decision back ("both are solid, depends what you need").
+    """
+    named = [n for n in set(NAME_IN_TOOL_RESULT.findall(corpus)) if n.lower() in answer.lower()]
+    if corpus and not named:
+        return ["named nobody from the tool results"]
+
+    lowered = answer.lower()
+    if any(h in lowered for h in HEDGE_MARKERS) and not any(
+        d in lowered for d in DECISION_MARKERS
+    ):
+        return ["hedged instead of committing"]
+
+    # No tool corpus to check against (a refusal case), so fall back to language.
+    if not corpus and not any(d in lowered for d in DECISION_MARKERS):
+        return ["no recommendation given"]
+    return []
+
+
 def check(case: dict, turn: Turn, messages: list[dict]) -> CaseResult:
     result = CaseResult(
         id=case["id"],
@@ -169,8 +211,8 @@ def check(case: dict, turn: Turn, messages: list[dict]) -> CaseResult:
         if needle.lower() in lowered:
             result.failures.append(f"said forbidden {needle!r}")
 
-    if case.get("wants_pick") and not any(m in lowered for m in PICK_MARKERS):
-        result.failures.append("no recommendation given")
+    if case.get("wants_pick"):
+        result.failures.extend(_recommendation_failures(answer, _tool_corpus(messages)))
 
     if not answer.strip():
         result.failures.append("empty answer")

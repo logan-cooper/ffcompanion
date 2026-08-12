@@ -134,6 +134,27 @@ def test_evals_pin_the_seed(monkeypatch):
     assert captured["options"]["seed"] == EVAL_SEED
 
 
+def test_thinking_is_off_by_default(monkeypatch):
+    """Measured, not assumed: 12/12 in 4.3 min with thinking off against 11/12
+    in 15.1 min with it on — better on accuracy AND speed."""
+    assert _capture_payload(monkeypatch)["think"] is False
+
+
+def test_thinking_can_be_turned_back_on(monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(
+        "advisor.agent.ollama.requests.post",
+        lambda url, json=None, timeout=None: (captured.update(json), _FakeResponse())[1],
+    )
+    backend = OllamaBackend(model="test:8b", think=True)
+    backend.chat(system="s", messages=[], tools=[])
+
+    assert captured["think"] is True
+    # The label has to carry it, or two rows of a scoreboard look identical.
+    assert "no-think" in OllamaBackend(model="test:8b", think=False).name
+    assert "no-think" not in backend.name
+
+
 def test_the_floor_clears_the_fixed_overhead():
     """Six tool schemas plus the system prompt cost ~2k tokens before the user
     has said anything; the window has to leave real room for tool results."""
@@ -305,12 +326,46 @@ def test_missing_expected_tool_fails():
     assert any("missing tool" in f for f in result.failures)
 
 
+_PICK_CASE = {"id": "x", "ask": "?", "wants_pick": True, "grounded": False}
+_WAIVER_CORPUS = _tool_messages(
+    '{"players": [{"name": "Ray Davis"}, {"name": "Phil Mafah"}]}'
+)
+
+
 def test_wants_pick_rejects_a_hedge():
-    case = {"id": "x", "ask": "?", "wants_pick": True, "grounded": False}
-    hedged = check(case, _turn("Both players have merit; it depends."), [])
-    committed = check(case, _turn("Start Puka Nacua."), [])
+    hedged = check(
+        _PICK_CASE,
+        _turn("Ray Davis and Phil Mafah both have merit; it depends on your needs."),
+        _WAIVER_CORPUS,
+    )
     assert not hedged.passed
-    assert committed.passed
+    assert any("hedged" in f for f in hedged.failures)
+
+
+def test_wants_pick_accepts_a_commitment_it_has_no_word_for():
+    """The real answer that was scored as no recommendation: it matched none of
+    the original fifteen marker words."""
+    answer = (
+        "The best available RB on waivers is Ray Davis (BUF, 4.12 PPG). "
+        "Prioritize Ray Davis for his consistent production."
+    )
+    assert check(_PICK_CASE, _turn(answer), _WAIVER_CORPUS).passed
+
+
+def test_wants_pick_rejects_an_answer_that_names_nobody():
+    vague = check(
+        _PICK_CASE,
+        _turn("There are several solid options on the wire this week."),
+        _WAIVER_CORPUS,
+    )
+    assert not vague.passed
+    assert any("named nobody" in f for f in vague.failures)
+
+
+def test_a_commitment_survives_hedging_language_around_it():
+    """Acknowledging a tradeoff is not refusing to choose."""
+    answer = "It depends on your needs, but I'd start Ray Davis."
+    assert check(_PICK_CASE, _turn(answer), _WAIVER_CORPUS).passed
 
 
 def test_must_say_any_accepts_equivalent_wordings():

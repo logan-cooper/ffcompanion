@@ -767,6 +767,63 @@ this architecture, whatever its benchmark scores say.
 Re-run any of this with `make eval-compare MODELS=...`; finished models are
 reused from `evals/results/` unless you pass `--fresh`.
 
+### Thinking is OFF, and that was measured (2026-08-12)
+
+qwen3:8b is a reasoning model. Same prompt, same seed, same league:
+
+```
+thinking OFF: 12/12  100% grounding   4.3 min
+thinking ON : 11/12  100% grounding  15.1 min
+```
+
+**Off is better on both axes** — more accurate *and* 3.5x faster, which is not
+the intuition. The single case thinking-on fails is `trade_eval`, where it calls
+`compare_players` instead of `evaluate_trade`: the reasoning block talks itself
+into "compare these two players" rather than "price this trade". That is a real
+ambiguity in the tool descriptions — `compare_players` advertises itself as the
+tool for "the 'is he better than' half of a trade discussion" and never says
+where it stops — but it only surfaces when the model reasons its way there.
+
+`THINKING=true` (or `eval --thinking`) turns it back on. **Re-check this on any
+new model**; it is a property of qwen3, not a law.
+
+### The two Phase 5 defects, and what they actually were (2026-08-12)
+
+Both were logged as "the model is too verbose". Neither was.
+
+**`waiver_wire` — no defect at all.** The model answered *"The best available RB
+is Ray Davis... Prioritize Ray Davis"*, and `wants_pick` scored it as giving no
+recommendation because none of its fifteen marker words appear in that sentence.
+The check is now behavioural: name a player that came back from a tool, and do
+not hedge without committing. That ties it to the data rather than to phrasing,
+the same instinct as the grounding assertion — and this file already said
+"assert on behaviour, not vocabulary" while the code did the opposite.
+
+**`start_sit` — 342s to 14s, two unrelated causes.** Most of it was the thinking
+block. The rest was the word FLEX: it sits in the prompt's `Starters:` line
+looking exactly like QB or RB, so the model searched the waiver wire for a
+player whose *position* was FLEX, then for RB, WR, TE and K in turn, and hit the
+tool-call cap. It already had the roster on call one. The prompt now says what
+the word means, and the case went from **8 tool calls to 1**.
+
+**A prompt fix that made things worse, kept here because the lesson is the
+point.** To stop the model answering from football memory, the prompt gained
+"if you have not called a tool, you have nothing to say" — which a model reads
+as *more tools are safer*. `start_sit` then looped `get_available_players` six
+times and hit the cap. The rule now targets the actual failure ("every claim
+must come from a tool result you have already received") without implying volume
+is a virtue. No amount of re-reading the prompt would have caught this; the
+suite caught it in one run.
+
+**The failure worth remembering:** with thinking off, `adversarial_premise` had
+been answering *"Bijan Robinson is not a bust; he has shown consistent
+production with a strong rushing attack"* — **zero tool calls, pure football
+memory** — and still scored **100% grounding**, because the audit checks
+invented *numbers* and that sentence contains none. Prose claims evade it
+entirely; `expect_tools` is what caught it. The prompt now forbids claims in
+words as much as in figures. The hole existed with thinking on too — reasoning
+was hiding it, and only the adversarial case was pointed enough to expose it.
+
 ### What the first real runs taught (2026-08-12)
 
 The first baseline scored **6/12 with 70% grounding**, and almost none of that

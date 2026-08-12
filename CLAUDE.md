@@ -6,13 +6,13 @@ starting any phase.
 
 **Status: Phase 5 complete, Phase 6 model choice made** (warehouse 2023-2025,
 Sleeper leagues, scoring engine, format-aware valuation, year-round validity,
-six-tool layer, local agent loop + eval harness). **The model is qwen3:8b** —
-11/12, 12/12 tool selection, 100% grounding; the evidence and the runners-up are
-in docs/ROADMAP.md Phase 6. Next: the prompt, against two measured defects —
-`waiver_wire` gives no recommendation, and `start_sit` answers correctly but
-takes 342s. Both are the same behaviour: surveying instead of deciding on
-open-ended roster questions. Don't skip ahead — each phase has a "Done when"
-test that gates the next one.
+six-tool layer, local agent loop + eval harness). **The model is qwen3:8b with thinking
+OFF** — 12/12, 100% grounding, 4.3 min; evidence and runners-up in
+docs/ROADMAP.md Phase 6. Next: format-paired evals. Every case so far ran
+against ONE dynasty league, so redraft and survival are unexercised through the
+agent and Phase 3b's whole point (dynasty and redraft must answer differently)
+is unverified end to end. Don't skip ahead — each phase has a "Done when" test
+that gates the next one.
 
 ## Stack
 Python 3.12, uv for deps, DuckDB locally (Postgres in Phase 8), FastAPI
@@ -48,6 +48,13 @@ no API key, no per-token cost, anywhere in this project.
   Always flush progress output, and send it to STDERR — progress on stdout means
   `eval --json > file` swallows every sign of life and a working run is
   indistinguishable from a hung one.
+- Reasoning is OFF (THINKING=false). Measured on qwen3:8b: 12/12 in 4.3 min off
+  vs 11/12 in 15.1 min on — better AND faster, which is not the intuition.
+  Re-check on any new model; it's a property of qwen3, not a law.
+- The grounding audit only catches invented NUMBERS. "He has shown consistent
+  production with a strong rushing attack" scores 100% grounded with zero tool
+  calls behind it. expect_tools is the defence, so every case that makes claims
+  about a player needs one.
 - Ollama's default context window is 4096 tokens and it does NOT error when a
   request exceeds it — it silently drops tokens, so the symptom is a slow wrong
   answer, never a clear failure. The six tool schemas (~1289 tokens) plus the

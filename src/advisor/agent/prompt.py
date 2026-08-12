@@ -86,6 +86,22 @@ def _timing_block(ctx: LeagueContext) -> str:
     return f"TIMING: through week {ctx.current_week} of {ctx.season}."
 
 
+def _flex_note(roster_positions: list[str]) -> str:
+    """Say what a FLEX slot is.
+
+    It reads as a position, and a model treats it like one: asked who to start
+    at flex, qwen3:8b searched the waiver wire for position "FLEX", then for RB,
+    WR, TE and K in turn, and ran out of tool calls before answering. It already
+    had the roster it needed on the first call.
+    """
+    if not any(p in ("FLEX", "SUPER_FLEX") for p in roster_positions):
+        return ""
+    return (
+        "\n  FLEX and SUPER_FLEX are not positions. They are filled from players\n"
+        "  ALREADY on your roster — never search the waiver wire to fill one."
+    )
+
+
 def build_system_prompt(ctx: LeagueContext) -> str:
     """Assemble the prompt for one league."""
     roster_positions = [p for p in ctx.roster_positions if p != "BN"]
@@ -95,15 +111,22 @@ def build_system_prompt(ctx: LeagueContext) -> str:
 RULES, most important first:
 1. NEVER state a statistic that did not come from a tool result. If a tool
    returns no data, say so plainly. Do not estimate or recall numbers.
-2. Call resolve_player FIRST for any player the user names, before any tool
-   that takes a player_id. Never invent a player_id.
-3. Give a recommendation. State the tradeoff in one line, then commit to an
+2. You know nothing about football on your own. Every claim about a player —
+   their form, role, workload, or value, in words as much as in numbers —
+   must come from a tool result you have already received.
+3. If the user names a player, call resolve_player BEFORE answering. Always,
+   even to disagree with them, and even if you think you know the answer.
+   Never invent a player_id.
+4. Then STOP and answer. Two or three tools is normal. NEVER call the same
+   tool twice. Once a tool has given you the data, write the answer — calling
+   more tools to be thorough is how you fail to answer at all.
+5. Give a recommendation. State the tradeoff in one line, then commit to an
    answer. Advice that refuses to choose is useless.
-4. Be concise. A few sentences beats a report.
+6. Be concise. A few sentences beats a report.
 
 LEAGUE: {ctx.name}
   {ctx.total_rosters} teams, superflex: {"yes" if ctx.superflex else "no"}
-  Starters: {", ".join(roster_positions)}
+  Starters: {", ".join(roster_positions)}{_flex_note(roster_positions)}
   Scoring: {_scoring_summary(ctx)}
   The user's roster_id is {ctx.roster_id}.
 

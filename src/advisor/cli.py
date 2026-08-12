@@ -126,6 +126,12 @@ def build_parser() -> argparse.ArgumentParser:
     evals.add_argument("--week", type=int, default=None)
     evals.add_argument("--case", default=None, help="Run one case by id.")
     evals.add_argument("--json", action="store_true", help="Machine-readable output.")
+    evals.add_argument(
+        "--thinking",
+        action="store_true",
+        help="Let a reasoning model think first. Off by default — it measured "
+        "worse AND slower here; use this to re-check that on a new model.",
+    )
 
     compare = subparsers.add_parser(
         "eval-compare",
@@ -492,7 +498,11 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
     # Evals pin the seed so a rerun is reproducible; chat deliberately does not.
     try:
-        backend = _backend_for(args.model or get_settings().model, seed=EVAL_SEED)
+        backend = _backend_for(
+            args.model or get_settings().model,
+            seed=EVAL_SEED,
+            think=True if args.thinking else None,
+        )
     except BackendError as exc:
         print(f"\n{exc}\n", file=sys.stderr)
         return 1
@@ -616,10 +626,10 @@ def _cmd_eval_compare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _backend_for(model: str, *, seed: int | None = None):
+def _backend_for(model: str, *, seed: int | None = None, think: bool | None = None):
     from advisor.agent.ollama import OllamaBackend
 
-    backend = OllamaBackend(model=model, seed=seed)
+    backend = OllamaBackend(model=model, seed=seed, think=think)
     backend.health()
     return backend
 

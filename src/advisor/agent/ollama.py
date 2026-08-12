@@ -100,12 +100,18 @@ class OllamaBackend:
         host: str | None = None,
         *,
         seed: int | None = None,
+        think: bool | None = None,
     ) -> None:
         settings = get_settings()
         self.model = model or settings.model
         self.host = (host or settings.ollama_host).rstrip("/")
-        self.name = f"ollama:{self.model}"
         self.context_tokens = settings.context_tokens
+        # Reasoning models emit a thinking block before answering. It is where
+        # qwen3:8b spends its time — 342s on one start/sit question — so it is
+        # switchable and the eval suite decides whether it earns that.
+        # Harmless on models that do not reason; verified against llama3.1:8b.
+        self.think = settings.thinking if think is None else think
+        self.name = f"ollama:{self.model}" + ("" if self.think else " (no-think)")
         # Chat leaves this None: a user who rephrases a question and gets the
         # identical answer back is being failed by a frozen seed.
         self.seed = seed
@@ -164,6 +170,7 @@ class OllamaBackend:
             "model": self.model,
             "messages": [{"role": "system", "content": system}, *messages],
             "stream": False,
+            "think": self.think,
             "keep_alive": KEEP_ALIVE,
             "options": {
                 "temperature": TEMPERATURE,

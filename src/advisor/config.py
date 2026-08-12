@@ -44,6 +44,12 @@ class Settings(BaseSettings):
         default=8192,
         description="Model context window. Must fit the prompt plus tool results.",
     )
+    thinking: bool = Field(
+        default=False,
+        description="Let a reasoning model think before answering. Off by "
+        "default: measured at 11/12 and 15.1 min against 12/12 and 4.3 min "
+        "with it off. See docs/ROADMAP.md Phase 6.",
+    )
     db_path: Path = Field(
         default=Path("data/advisor.duckdb"),
         description="Path to the local DuckDB file.",
