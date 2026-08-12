@@ -90,3 +90,30 @@
   # Two full turns, so it gets two turns' worth of budget — not a licence to be
   # slow, which is why it is 2x and not open-ended.
   max_seconds: 240
+
+# ---------------------------------------------------------------- format pairs
+# The same question asked under two formats, holding league, roster, scoring and
+# week fixed so that any difference is attributable to format alone. If these
+# answers ever come back identical, Phase 3b collapsed and nothing else in this
+# file would notice.
+
+# The single highest-value eval in the suite. An aging producer for a young
+# ascending player is the trade whose correct answer genuinely inverts: dynasty
+# should weigh the youth, redraft should ignore age entirely.
+- id: age_for_production_paired
+  ask: "Should I trade Christian McCaffrey for Tetairoa McMillan?"
+  expect_tools: [resolve_player, evaluate_trade]
+  paired_formats: [dynasty, redraft]
+  expects_different_answer: true
+  wants_pick: true
+  grounded: true
+  max_seconds: 240
+
+# Redraft must never price a rookie's future, because there is no future in it.
+- id: young_player_hold_paired
+  ask: "I'm rebuilding. Should I hold Ashton Jeanty or trade him for win-now help?"
+  expect_tools: [resolve_player]
+  paired_formats: [dynasty, redraft]
+  expects_different_answer: true
+  grounded: true
+  max_seconds: 240

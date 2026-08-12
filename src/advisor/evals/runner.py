@@ -13,6 +13,7 @@ failure it can have — and unlike tone or length, it can be measured exactly.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import time
@@ -25,6 +26,7 @@ import yaml
 from advisor.agent import Turn, run_turn
 from advisor.agent.backend import Backend
 from advisor.context import LeagueContext
+from advisor.league_format import MULTI_YEAR_FORMATS
 
 CASES_PATH = Path(__file__).resolve().parents[3] / "evals" / "cases.yaml"
 
@@ -239,7 +241,7 @@ def load_cases(path: Path | None = None) -> list[dict]:
     return yaml.safe_load((path or CASES_PATH).read_text())
 
 
-def run_case(backend: Backend, ctx: LeagueContext, case: dict) -> CaseResult:
+def _ask(backend: Backend, ctx: LeagueContext, case: dict) -> tuple[Turn, list[dict]]:
     messages: list[dict] = [{"role": "user", "content": case["ask"]}]
     turn = run_turn(backend, ctx, messages)
 
@@ -254,7 +256,71 @@ def run_case(backend: Backend, ctx: LeagueContext, case: dict) -> CaseResult:
         turn.elapsed_seconds += second.elapsed_seconds
         turn.hit_iteration_cap = turn.hit_iteration_cap or second.hit_iteration_cap
 
-    return check(case, turn, messages)
+    return turn, messages
+
+
+def _as_format(ctx: LeagueContext, fmt: str) -> LeagueContext:
+    """The same league, reinterpreted under another format.
+
+    Deliberately NOT a second real league. Holding the roster, scoring, week and
+    player pool fixed means any difference in the answer is attributable to
+    format and nothing else; a different league would vary all of those at once
+    and prove nothing. Same technique tools/demo.py uses to prove the tool layer
+    branches — this applies it one level up, to the agent.
+    """
+    return dataclasses.replace(ctx, format=fmt, name=f"{ctx.name} (as {fmt})")
+
+
+def run_case(backend: Backend, ctx: LeagueContext, case: dict) -> CaseResult:
+    formats = case.get("paired_formats")
+    if not formats:
+        turn, messages = _ask(backend, ctx, case)
+        return check(case, turn, messages)
+
+    # Ask the identical question under each format and compare.
+    runs: dict[str, tuple[Turn, list[dict]]] = {
+        fmt: _ask(backend, _as_format(ctx, fmt), case) for fmt in formats
+    }
+
+    primary = formats[0]
+    turn, messages = runs[primary]
+    result = check(case, turn, messages)
+    result.seconds = sum(t.elapsed_seconds for t, _ in runs.values())
+    result.failures.extend(_paired_format_failures(case, runs))
+    result.passed = not result.failures
+    return result
+
+
+def _paired_format_failures(
+    case: dict, runs: dict[str, tuple[Turn, list[dict]]]
+) -> list[str]:
+    """Check that format actually reached the answer.
+
+    This is the highest-value assertion in the suite. Phase 3b exists so that a
+    dynasty answer and a redraft answer to the same question differ; if they come
+    back identical, something upstream collapsed and every other case would still
+    look fine.
+    """
+    failures = []
+
+    # Each format must produce its own answer, not one answer twice.
+    if case.get("expects_different_answer"):
+        texts = {fmt: (turn.text or "").strip() for fmt, (turn, _) in runs.items()}
+        if len(set(texts.values())) < len(texts):
+            failures.append("identical answer across formats — format never reached it")
+
+    # In a single-year format future value is zero by definition, so citing a
+    # non-zero one is not a judgement call, it is wrong.
+    for fmt, (turn, messages) in runs.items():
+        if fmt in MULTI_YEAR_FORMATS:
+            continue
+        corpus = _tool_corpus(messages)
+        for match in re.finditer(r'"future":\s*([0-9.]+)', corpus):
+            if float(match.group(1)) != 0.0:
+                failures.append(f"{fmt}: tool returned future={match.group(1)}, must be 0")
+                break
+
+    return failures
 
 
 def run_suite(

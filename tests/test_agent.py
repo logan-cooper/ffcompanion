@@ -25,6 +25,7 @@ from advisor.evals.runner import (
     CaseResult,
     _is_grounded,
     _numbers,
+    _paired_format_failures,
     check,
     load_cases,
     per_case_matrix,
@@ -488,6 +489,61 @@ def test_empty_answer_fails():
 def test_hitting_the_iteration_cap_fails():
     turn = _turn("gave up", hit_iteration_cap=True)
     assert not check({"id": "x", "ask": "?", "grounded": False}, turn, []).passed
+
+
+# ------------------------------------------------------------- format pairing
+
+def _paired(dynasty_text: str, redraft_text: str, redraft_corpus: str = '{"future": 0.0}'):
+    return {
+        "dynasty": (_turn(dynasty_text), _tool_messages('{"future": 108.7}')),
+        "redraft": (_turn(redraft_text), _tool_messages(redraft_corpus)),
+    }
+
+
+def test_identical_answers_across_formats_fail():
+    """The whole point of Phase 3b. If dynasty and redraft answer the same, the
+    format never reached the answer and every other case still looks fine."""
+    case = {"id": "x", "expects_different_answer": True}
+    same = _paired("Trade him.", "Trade him.")
+    failures = _paired_format_failures(case, same)
+    assert any("identical answer" in f for f in failures)
+
+
+def test_differing_answers_across_formats_pass():
+    case = {"id": "x", "expects_different_answer": True}
+    differing = _paired("Hold him for the future.", "Trade him, age is irrelevant.")
+    assert _paired_format_failures(case, differing) == []
+
+
+def test_a_single_year_format_must_price_no_future():
+    """future is zero in redraft by definition, so a non-zero one is wrong, not
+    a judgement call."""
+    case = {"id": "x"}
+    leaked = _paired("Hold.", "Trade.", redraft_corpus='{"future": 108.7}')
+    failures = _paired_format_failures(case, leaked)
+    assert any("future=108.7" in f for f in failures)
+
+
+def test_multi_year_formats_are_allowed_a_future():
+    case = {"id": "x"}
+    assert _paired_format_failures(case, _paired("Hold.", "Trade.")) == []
+
+
+def test_reinterpreting_a_league_changes_only_the_format():
+    """Same roster, scoring, week and players — so a differing answer is
+    attributable to format and nothing else."""
+    from advisor.context import LeagueContext
+    from advisor.evals.runner import _as_format
+
+    dynasty = LeagueContext(
+        league_id="1", name="Test", season=2025, format="dynasty", current_week=14
+    )
+    redraft = _as_format(dynasty, "redraft")
+
+    assert redraft.format == "redraft"
+    assert redraft.current_week == dynasty.current_week
+    assert redraft.league_id == dynasty.league_id
+    assert "redraft" in redraft.name
 
 
 # --------------------------------------------------------------- the case file
