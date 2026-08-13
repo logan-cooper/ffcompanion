@@ -1011,6 +1011,37 @@ paying for that machine's GPU.
 **Done when:** a fresh clone plus `make serve` gives a working chat app at
 `localhost:8000`, with no API key of any kind.
 
+### Choosing a league (2026-08-13)
+
+"How will I know what league the chat is looking at?" had no good answer: the
+page never showed it and offered no way to change it, and `/chat` accepted a
+`league_id` the frontend never sent. Adding the picker surfaced two real bugs.
+
+**A conversation drifted between leagues.** `conversations.league_id` was
+written at creation and never read back, so turn two re-ran the default picker —
+and that default moves when a league is linked, an intent is set, or a league is
+renamed. History about league A stayed in the prompt while the tools and system
+prompt described league B. Threads are now pinned via `conversations.league_of()`,
+and switching starts a new one. No migration: the column was always populated.
+
+**An unknown league killed the stream mid-response.** A bogus id passed
+`_pick_league` unvalidated, then `load_context` raised inside the response
+generator — after a 200 had already gone out, which a browser can only render as
+an answer stopping mid-sentence. `_pick_league` now validates, `load_context`
+runs in the handler, and the whole class returns a 404.
+
+**One ordering, one picker.** `context.list_leagues()` is now the single
+definition of "which league am I in"; `_pick_league` takes row zero and the UI
+renders the same list, so the dropdown and the default cannot disagree. Its
+`team_intent` join is aggregated — that table is keyed `(league_id, roster_id)`,
+so a plain join fanned one league into a row per intent and `LIMIT 1` chose
+between them arbitrarily.
+
+Also replaced a test of mine that asserted `"survival"` appeared in
+`_pick_league`'s **source text** — the same "assert on the label, not the thing"
+weakness that caused several eval-harness bugs. It now asserts a survival league
+is not offered first.
+
 ### Built (2026-08-12)
 
 `make serve` → `http://127.0.0.1:8000`. `GET /health`, `GET /data-status`,

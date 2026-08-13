@@ -141,15 +141,34 @@ def test_a_fresh_install_resolves_a_roster_without_team_intent():
     assert _owned_roster(leagues[0]["league_id"]) is not None
 
 
-def test_survival_leagues_are_not_the_default_landing_place():
-    """A survival league has no persistent rosters, so defaulting a newcomer
-    into one answers most of their questions with "that does not apply here"."""
-    import inspect
+def test_league_rows_render_for_selection():
+    """/leagues has to show enough to choose from: name, format, and whose
+    roster it is."""
+    from advisor.cli import _league_line
 
-    from advisor.cli import _pick_league
+    row = {
+        "league_id": "1", "name": "Beer Ball Empire", "format": "dynasty",
+        "season": 2025, "roster_id": 9,
+    }
+    line = _league_line(row, 1, current=True)
+    assert "Beer Ball Empire" in line and "dynasty" in line and "roster 9" in line
+    assert line.lstrip().startswith("*"), "the current league must be marked"
 
-    source = inspect.getsource(_pick_league)
-    assert "survival" in source
+    unowned = dict(row, roster_id=None)
+    assert "roster" not in _league_line(unowned, 2, current=False)
+
+
+def test_a_league_is_selectable_by_index_or_by_id():
+    from advisor.cli import _find_league
+
+    rows = [
+        {"league_id": "aaa", "name": "First"},
+        {"league_id": "bbb", "name": "Second"},
+    ]
+    assert _find_league("2", rows)["name"] == "Second"
+    assert _find_league("bbb", rows)["name"] == "Second"
+    assert _find_league("nope", rows) is None
+    assert _find_league("99", rows) is None, "an out-of-range index is not a league"
 
 
 # ------------------------------------------------------------- the $0 promise

@@ -97,6 +97,71 @@ def weeks_completed(season: int) -> int:
     return rows[0]["week"] or 0 if rows else 0
 
 
+def list_leagues() -> list[dict[str, Any]]:
+    """Every linked league, best default first.
+
+    This ORDER BY is the definition of "which league am I in": `_pick_league`
+    takes row zero and the web UI renders the same list in the same order, so
+    the dropdown's first entry and the default answer cannot disagree. Two
+    copies of this ordering would drift.
+
+    `roster_id` is the resolved one — a user-set intent outranks Sleeper's
+    ownership record, per the rule that intent is never inferred. Both inputs
+    are returned alongside so callers can tell which applied.
+    """
+    from advisor.config import get_settings
+
+    username = (get_settings().sleeper_username or "").strip() or None
+
+    return query(
+        """
+        SELECT
+            l.league_id,
+            l.name,
+            l.season,
+            l.format,
+            l.superflex,
+            l.total_rosters,
+            intent.roster_id                            AS intent_roster_id,
+            owned.roster_id                             AS owned_roster_id,
+            COALESCE(intent.roster_id, owned.roster_id) AS roster_id
+        FROM leagues l
+        -- Aggregated on purpose. team_intent is keyed (league_id, roster_id),
+        -- so a plain join fans one league into one row per intent, and a
+        -- LIMIT 1 over that picks between them arbitrarily.
+        LEFT JOIN (
+            SELECT league_id, MIN(roster_id) AS roster_id
+            FROM team_intent GROUP BY league_id
+        ) intent ON intent.league_id = l.league_id
+        -- Which roster this Sleeper account owns. Nothing in the league data
+        -- marks which manager is you, so it comes from the configured username.
+        -- Unset is the fresh-install state: lower(NULL) matches nothing, so the
+        -- subquery is simply empty rather than an error.
+        LEFT JOIN (
+            SELECT r.league_id, MIN(r.roster_id) AS roster_id
+            FROM league_rosters r
+            JOIN league_users u
+              ON u.league_id = r.league_id AND u.user_id = r.owner_id
+            WHERE lower(u.display_name) = lower(?)
+            GROUP BY r.league_id
+        ) owned ON owned.league_id = l.league_id
+        ORDER BY
+            -- A league the user has stated an intent for is the one they care
+            -- about. Then anything the app can actually advise on: survival
+            -- leagues have no persistent rosters, so landing a newcomer there
+            -- answers most questions with "that does not apply here".
+            intent.roster_id IS NULL,
+            l.format = 'survival',
+            l.name,
+            -- The same league in two seasons shares a name; without these the
+            -- order is nondeterministic and the picker shows duplicate labels.
+            l.season DESC,
+            l.league_id
+        """,
+        [username],
+    )
+
+
 def load_context(
     league_id: str,
     *,

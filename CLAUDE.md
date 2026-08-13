@@ -64,6 +64,16 @@ no API key, no per-token cost, anywhere in this project.
   bugs (no roster_id, and a username check that tested for the key rather than a
   value) were invisible here because local state already supplied what was
   missing.
+- A conversation is PINNED to the league it was created in. Never re-run the
+  picker for turn two: conversations.league_id was write-only, so a thread
+  silently migrated whenever the default moved (a league linked, an intent set,
+  a rename) — leaving league A's history in front of league B's system prompt.
+  conversations.league_of() reads it back; switching leagues starts a new thread.
+- context.list_leagues() is the ONE ordering that decides which league you are
+  in. _pick_league takes row zero and the web UI renders the same list, so the
+  dropdown's first entry and the default answer cannot disagree. Its team_intent
+  join is aggregated on purpose — that table is keyed (league_id, roster_id), so
+  a plain join fans one league into a row per intent.
 - The web layer binds to 127.0.0.1 and that is a product decision, not a
   limitation: serve other people from one machine and that machine's GPU is
   doing everyone's inference, which is the cost model this project pivoted away
@@ -162,6 +172,9 @@ make chat                 # local REPL; needs `ollama serve` running
 make eval MODEL=qwen3:8b  # eval suite; 15-20 min, this is how a model gets picked
 make eval-compare MODELS=a,b,c   # scoreboard across models; ~15 min each
 make serve                # web UI at http://127.0.0.1:8000; needs `ollama serve`
+
+In chat, /leagues lists linked leagues and /league N switches (clearing the
+conversation). The web UI has a dropdown in the header.
 
 Eval progress goes to STDERR, so `eval --json > out.json` still shows live
 progress. eval-compare saves each model to evals/results/ as it finishes and

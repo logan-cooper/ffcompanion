@@ -275,3 +275,131 @@ def test_every_linked_league_has_a_waiver_universe(linked_leagues):
     assert rows
     for r in rows:
         assert r["available"] > 0, f"{r['name']} has no free agents"
+
+
+# ------------------------------------------------------------- listing leagues
+#
+# `list_leagues` decides which league every answer is about, so these run the
+# real SQL against the real schema. Two Phase 8 bugs were invented identifiers
+# (a `rosters` table, a `rows` column) that only executing the query catches.
+
+def _link(league_id: str, name: str, fmt: str, season: int = 2025) -> None:
+    query(
+        """
+        INSERT INTO leagues (league_id, season, name, status, total_rosters,
+                             sleeper_type, format, format_source, superflex,
+                             has_taxi, is_continuation, roster_positions,
+                             scoring_settings, settings, fetched_at)
+        VALUES (?, ?, ?, 'complete', 12, 2, ?, 'settings.type', false,
+                false, false, '[]', '{}', '{}', now())
+        """,
+        [league_id, season, name, fmt],
+    )
+
+
+def _own(league_id: str, roster_id: int, user_id: str, display_name: str) -> None:
+    query(
+        "INSERT INTO league_users (league_id, user_id, display_name, team_name) "
+        "VALUES (?, ?, ?, NULL)",
+        [league_id, user_id, display_name],
+    )
+    query(
+        "INSERT INTO league_rosters (league_id, roster_id, owner_id, players, "
+        "starters, taxi, reserve, wins, losses, ties, fpts) "
+        "VALUES (?, ?, ?, '[]', '[]', '[]', '[]', 0, 0, 0, 0.0)",
+        [league_id, roster_id, user_id],
+    )
+
+
+def _intend(league_id: str, roster_id: int, intent: str = "contend") -> None:
+    query(
+        "INSERT INTO team_intent (league_id, roster_id, intent, updated_at) "
+        "VALUES (?, ?, ?, now())",
+        [league_id, roster_id, intent],
+    )
+
+
+@pytest.fixture
+def as_user(monkeypatch):
+    """Configure a Sleeper username, which is what identifies the user's roster."""
+    from advisor.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "sleeper_username", "tester", raising=False)
+
+
+def test_listing_names_the_roster_the_user_owns(league_db, as_user):
+    """Nothing in the league data marks which manager is you, so it comes from
+    the configured username joined through league_rosters.owner_id."""
+    from advisor.context import list_leagues
+
+    _link("L1", "Dynasty A", "dynasty")
+    _own("L1", 7, "U-tester", "tester")
+    _own("L1", 3, "U-other", "someone-else")
+
+    row = list_leagues()[0]
+    assert row["owned_roster_id"] == 7
+    assert row["roster_id"] == 7
+
+
+def test_team_intent_outranks_sleeper_ownership(league_db, as_user):
+    """Intent is user-set and deliberate; ownership is merely a fact about the
+    account. The stated one wins."""
+    from advisor.context import list_leagues
+
+    _link("L1", "Dynasty A", "dynasty")
+    _own("L1", 7, "U-tester", "tester")
+    _intend("L1", 4)
+
+    row = list_leagues()[0]
+    assert row["intent_roster_id"] == 4
+    assert row["owned_roster_id"] == 7
+    assert row["roster_id"] == 4, "a stated intent must win"
+
+
+def test_a_league_with_intent_on_two_rosters_is_listed_once(league_db, as_user):
+    """team_intent is keyed (league_id, roster_id), so a plain join fans one
+    league into several rows and a LIMIT 1 over that picks arbitrarily."""
+    from advisor.context import list_leagues
+
+    _link("L1", "Dynasty A", "dynasty")
+    _intend("L1", 4)
+    _intend("L1", 9)
+
+    rows = list_leagues()
+    assert len(rows) == 1
+    assert rows[0]["roster_id"] == 4, "lowest roster, deterministically"
+
+
+def test_survival_is_not_the_first_league_offered(league_db, as_user):
+    """A survival league has no persistent rosters, so landing a newcomer there
+    answers most questions with "that does not apply here"."""
+    from advisor.context import list_leagues
+
+    _link("S1", "AAA survival", "survival")   # alphabetically first
+    _link("D1", "ZZZ dynasty", "dynasty")
+
+    assert list_leagues()[0]["league_id"] == "D1"
+
+
+def test_listing_works_with_no_username_configured(league_db, monkeypatch):
+    """The fresh-install state: linked leagues, nothing identifying the user."""
+    from advisor.config import get_settings
+    from advisor.context import list_leagues
+
+    monkeypatch.setattr(get_settings(), "sleeper_username", None, raising=False)
+    _link("L1", "Dynasty A", "dynasty")
+    _own("L1", 7, "U-tester", "tester")
+
+    row = list_leagues()[0]
+    assert row["roster_id"] is None, "cannot know which roster without a username"
+
+
+def test_an_unlinked_league_id_is_refused(league_db, as_user):
+    """Unvalidated, a bad id reached the web layer's generator and killed the
+    SSE stream after a 200 had already been sent."""
+    from advisor.cli import _pick_league
+
+    _link("L1", "Dynasty A", "dynasty")
+
+    with pytest.raises(LookupError, match="not linked"):
+        _pick_league("no-such-league")

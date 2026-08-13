@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from advisor.agent import run_turn
 from advisor.agent.backend import BackendError
 from advisor.config import get_settings
-from advisor.context import load_context
+from advisor.context import list_leagues, load_context
 from advisor.db import query
 from advisor.warehouse import conversations
 
@@ -61,7 +61,10 @@ def _resolve_league(league_id: str | None) -> tuple[str, int | None]:
     try:
         return _pick_league(league_id)
     except LookupError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        # A named league that isn't linked is a missing resource; nothing linked
+        # at all is the server not being set up yet.
+        status = 404 if league_id else 409
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 
 def _sse(event: str, data: Any) -> str:
@@ -102,6 +105,16 @@ def data_status() -> dict:
     return {"seasons": ingested, "leagues": leagues}
 
 
+@app.get("/leagues")
+def get_leagues() -> dict:
+    """Linked leagues, best default first — the same order the picker uses.
+
+    An empty list with a 200 rather than an error: nothing linked yet is a
+    setup state the page can explain, not a server fault.
+    """
+    return {"leagues": list_leagues()}
+
+
 @app.get("/conversations")
 def list_conversations(league_id: str | None = None) -> dict:
     return {"conversations": conversations.recent(league_id)}
@@ -129,29 +142,63 @@ def chat(request: ChatRequest) -> StreamingResponse:
     not decoration — this app's premise is that numbers are traceable, so
     showing which tools ran is part of the answer.
     """
-    league_id, roster_id = _resolve_league(request.league_id)
-
     conversation_id = request.conversation_id
-    if conversation_id and not conversations.exists(conversation_id):
-        raise HTTPException(status_code=404, detail="no such conversation")
+    if conversation_id:
+        # A thread is pinned to the league it was created in. Re-running the
+        # picker here is what let a conversation silently migrate when the
+        # default moved, leaving league A's history in front of league B's
+        # system prompt.
+        pinned = conversations.league_of(conversation_id)
+        if pinned is None:
+            raise HTTPException(status_code=404, detail="no such conversation")
+        if request.league_id and request.league_id != pinned["league_id"]:
+            raise HTTPException(
+                status_code=409,
+                detail="this thread is about another league; start a new one to switch",
+            )
+        league_id, roster_id = pinned["league_id"], pinned["roster_id"]
+    else:
+        league_id, roster_id = _resolve_league(request.league_id)
+
+    # Resolved out here, not inside the generator. A LookupError in `stream()`
+    # killed the response after a 200 had already gone out, which a browser can
+    # only render as an answer that stops mid-sentence.
+    try:
+        ctx = load_context(league_id, roster_id=roster_id, current_week=request.week)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # Created only once resolution has succeeded, so a failure leaves no empty
+    # thread behind.
     if not conversation_id:
         conversation_id = conversations.create(league_id, roster_id)
 
     def stream():
+        # First, before anything that can fail. A dead Ollama then still tells
+        # you which league you asked about and hands back a conversation_id to
+        # retry into, instead of orphaning the turn.
+        yield _sse(
+            "start",
+            {
+                "conversation_id": conversation_id,
+                "league_id": ctx.league_id,
+                "league": ctx.name,
+                "roster_id": ctx.roster_id,
+                "week": ctx.current_week,
+            },
+        )
+
         try:
             backend = _backend()
         except BackendError as exc:
             yield _sse("error", {"message": str(exc)})
             return
 
-        ctx = load_context(league_id, roster_id=roster_id, current_week=request.week)
         # History first, then this message — the model needs the thread, and the
         # database is where the thread lives.
         messages = conversations.for_model(conversation_id)
         messages.append({"role": "user", "content": request.message})
         conversations.append(conversation_id, "user", request.message)
-
-        yield _sse("start", {"conversation_id": conversation_id, "league": ctx.name})
 
         # run_turn blocks, so it runs on its own thread and pushes events to a
         # queue this generator drains. Collecting everything first and emitting

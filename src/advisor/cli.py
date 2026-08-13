@@ -338,83 +338,84 @@ def _cmd_verify_scoring(args: argparse.Namespace) -> int:
 
 
 CHAT_HELP = """commands:
-  /week N     set the current week (changes what "recent" means)
-  /intent X   contend | rebuild | balanced  (dynasty only)
-  /format     show the detected league format
-  /league     show league details
-  /roster N   answer as a different roster
-  /verbose    toggle tool-call tracing
-  /reset      clear the conversation
+  /leagues       list linked leagues
+  /league        show current league details
+  /league N|id   switch leagues (clears the conversation)
+  /week N        set the current week (changes what "recent" means)
+  /intent X      contend | rebuild | balanced  (dynasty only)
+  /format        show the detected league format
+  /roster N      answer as a different roster
+  /verbose       toggle tool-call tracing
+  /reset         clear the conversation
   /help /quit
 """
+
+
+def _league_line(row: dict, index: int, *, current: bool) -> str:
+    """One league as a selectable row."""
+    roster = f"roster {row['roster_id']}" if row["roster_id"] is not None else "—"
+    return (
+        f"  {'*' if current else ' '} {index}. {row['name'][:24]:<26}"
+        f"{row['format']:<10}{row['season']:<6}{roster}"
+    )
+
+
+def _find_league(rest: str, rows: list[dict]) -> dict | None:
+    """Resolve a /league argument: a 1-based index from /leagues, or a league id."""
+    rest = rest.strip()
+    if rest.isdigit():
+        index = int(rest)
+        if 1 <= index <= len(rows):
+            return rows[index - 1]
+        # Fall through: a numeric league id is also all digits, so a number
+        # outside the list range is still worth matching by id.
+    return next((r for r in rows if r["league_id"] == rest), None)
 
 
 def _owned_roster(league_id: str) -> int | None:
     """Which roster in this league belongs to the configured user.
 
-    Sleeper already tells us: league_rosters.owner_id joins to
-    league_users.user_id, whose display_name is the username. Without this,
-    a fresh install has no team_intent rows, so roster_id came back None and
-    "how does my roster look?" was answered with "please provide your
-    roster_id" — a question the user cannot sensibly answer and the loop is
-    supposed to bind for them.
+    Sleeper knows: league_rosters.owner_id joins league_users.user_id, whose
+    display_name is the username. Without this a fresh install has no
+    team_intent rows, so roster_id came back None and "how does my roster look?"
+    was answered with "please provide your roster_id" — a question the user
+    cannot sensibly answer and the loop is supposed to bind for them.
     """
-    from advisor.config import get_settings
-    from advisor.db import query
+    from advisor.context import list_leagues
 
-    username = (get_settings().sleeper_username or "").strip()
-    if not username:
-        return None
-
-    rows = query(
-        """
-        SELECT r.roster_id
-        FROM league_rosters r
-        JOIN league_users u
-          ON u.user_id = r.owner_id AND u.league_id = r.league_id
-        WHERE r.league_id = ? AND lower(u.display_name) = lower(?)
-        LIMIT 1
-        """,
-        [league_id, username],
-    )
-    return rows[0]["roster_id"] if rows else None
+    for row in list_leagues():
+        if row["league_id"] == league_id:
+            return row["owned_roster_id"]
+    return None
 
 
 def _pick_league(league_id: str | None) -> tuple[str, int | None]:
     """Resolve which league and roster to open.
 
-    Roster comes from team_intent when the user has set one — that is the
-    deliberate signal — and otherwise from who owns the roster on Sleeper.
+    A lookup into `list_leagues()`, never its own query — the ordering that
+    decides the default has to be the same one the UI renders, or the dropdown's
+    first entry and the default answer disagree.
     """
-    from advisor.db import query
+    from advisor.context import list_leagues
 
-    if league_id:
-        rows = query(
-            "SELECT roster_id FROM team_intent WHERE league_id = ? LIMIT 1", [league_id]
-        )
-        roster_id = rows[0]["roster_id"] if rows else None
-        return league_id, roster_id if roster_id is not None else _owned_roster(league_id)
-
-    rows = query(
-        """
-        SELECT l.league_id, t.roster_id
-        FROM leagues l
-        LEFT JOIN team_intent t ON t.league_id = l.league_id
-        -- Prefer a league with an intent set, then one this app can actually
-        -- advise on: survival leagues have no persistent rosters, so opening in
-        -- one by default lands a new user somewhere most questions do not apply.
-        ORDER BY t.roster_id IS NULL, l.format = 'survival', l.name
-        LIMIT 1
-        """
-    )
-    if not rows:
+    leagues = list_leagues()
+    if not leagues:
         raise LookupError(
             "No leagues linked. Run: make link-league USERNAME=<you> SEASON=2025"
         )
 
-    resolved = rows[0]["league_id"]
-    roster_id = rows[0]["roster_id"]
-    return resolved, roster_id if roster_id is not None else _owned_roster(resolved)
+    if league_id:
+        match = next((r for r in leagues if r["league_id"] == league_id), None)
+        if match is None:
+            # Checked here rather than left to load_context. Unvalidated, a bad
+            # id reached the web layer's response generator and killed the SSE
+            # stream after a 200 had already been sent — which a browser can
+            # only render as an answer stopping mid-sentence.
+            linked = ", ".join(f"{r['league_id']} ({r['name']})" for r in leagues[:5])
+            raise LookupError(f"league {league_id!r} is not linked. Linked: {linked}")
+        return match["league_id"], match["roster_id"]
+
+    return leagues[0]["league_id"], leagues[0]["roster_id"]
 
 
 def _cmd_chat(args: argparse.Namespace) -> int:
@@ -422,7 +423,7 @@ def _cmd_chat(args: argparse.Namespace) -> int:
 
     from advisor.agent import Turn, new_backend, run_turn
     from advisor.agent.backend import BackendError
-    from advisor.context import load_context
+    from advisor.context import list_leagues, load_context
     from advisor.league_format import TEAM_INTENTS
 
     try:
@@ -456,7 +457,7 @@ def _cmd_chat(args: argparse.Namespace) -> int:
 
     while True:
         try:
-            raw = input("> ").strip()
+            raw = input(f"{ctx.name[:18]}/{ctx.roster_id}> ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
@@ -479,12 +480,47 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                 print(f"verbose {'on' if verbose else 'off'}")
             elif command == "/format":
                 print(f"{ctx.format} (detected: {ctx.needs_format_confirmation=})")
+            elif command == "/leagues":
+                rows = list_leagues()
+                for index, row in enumerate(rows, 1):
+                    print(
+                        _league_line(
+                            row, index, current=row["league_id"] == ctx.league_id
+                        )
+                    )
+                print("\n  /league N to switch")
             elif command == "/league":
-                print(
-                    f"{ctx.name} | {ctx.total_rosters} teams | superflex="
-                    f"{ctx.superflex} | week {ctx.current_week} of {ctx.season} | "
-                    f"stats from {ctx.stats_season}"
-                )
+                if not rest:
+                    print(
+                        f"{ctx.name} | {ctx.total_rosters} teams | superflex="
+                        f"{ctx.superflex} | week {ctx.current_week} of {ctx.season} | "
+                        f"stats from {ctx.stats_season}"
+                    )
+                else:
+                    target = _find_league(rest, list_leagues())
+                    if target is None:
+                        print(f"no league matching {rest!r}. /leagues for the list.")
+                    else:
+                        ctx = load_context(
+                            target["league_id"],
+                            roster_id=target["roster_id"],
+                            # A hand-set week only carries within a season:
+                            # week 14 of 2024 and of 2025 are not the same
+                            # question.
+                            current_week=(
+                                ctx.current_week
+                                if target["season"] == ctx.season
+                                else None
+                            ),
+                        )
+                        # Not optional. Leaving league A's history in front of
+                        # league B's system prompt is the same failure the web
+                        # layer's pinning fixes.
+                        messages.clear()
+                        print(
+                            f"now in {ctx.name} ({ctx.format}), roster "
+                            f"{ctx.roster_id} — conversation cleared"
+                        )
             elif command == "/week":
                 if rest.isdigit():
                     ctx = dataclasses.replace(ctx, current_week=int(rest))
@@ -494,7 +530,9 @@ def _cmd_chat(args: argparse.Namespace) -> int:
             elif command == "/roster":
                 if rest.isdigit():
                     ctx = load_context(
-                        league_id, roster_id=int(rest), current_week=ctx.current_week
+                        ctx.league_id,
+                        roster_id=int(rest),
+                        current_week=ctx.current_week,
                     )
                     print(f"answering as roster {ctx.roster_id}")
                 else:
@@ -503,7 +541,7 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                 if rest in TEAM_INTENTS:
                     from advisor.warehouse.leagues import set_team_intent
 
-                    set_team_intent(league_id, ctx.roster_id, rest)
+                    set_team_intent(ctx.league_id, ctx.roster_id, rest)
                     ctx = dataclasses.replace(ctx, team_intent=rest)
                     print(f"intent set to {rest} (saved)")
                 else:

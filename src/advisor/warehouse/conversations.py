@@ -49,6 +49,22 @@ def exists(conversation_id: str) -> bool:
     )
 
 
+def league_of(conversation_id: str) -> dict[str, Any] | None:
+    """The league a thread was created in, or None if there is no such thread.
+
+    A thread never changes leagues. These columns were written at creation and
+    never read back, so turn two re-ran the default picker — and that default
+    moves when a league is linked, an intent is set, or a league is renamed. The
+    history stayed about league A while the tools and the system prompt
+    described league B: a wrong answer that reads like a right one.
+    """
+    rows = query(
+        "SELECT league_id, roster_id FROM conversations WHERE conversation_id = ?",
+        [conversation_id],
+    )
+    return rows[0] if rows else None
+
+
 def append(
     conversation_id: str,
     role: str,

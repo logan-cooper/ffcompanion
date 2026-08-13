@@ -28,6 +28,14 @@
   header h1 { font-size: 1rem; margin: 0; font-weight: 650; }
   .meta { color: var(--dim); font-size: .82rem; }
   .meta.bad { color: var(--warn); }
+  select {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: .2rem .4rem; font: inherit; font-size: .82rem;
+    max-width: 20rem;
+  }
+  select:disabled { opacity: .55; }
+  .note { max-width: 46rem; margin: 0 auto 1rem; color: var(--dim);
+          font-size: .78rem; text-align: center; }
   #log { flex: 1; overflow-y: auto; padding: 1rem; }
   .turn { max-width: 46rem; margin: 0 auto 1.25rem; }
   .who { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
@@ -61,6 +69,8 @@
 <body>
 <header>
   <h1>ffcompanion</h1>
+  <select id="league" title="Which league answers are about"></select>
+  <span class="meta" id="whoami"></span>
   <span class="meta" id="status">checking…</span>
 </header>
 
@@ -80,7 +90,10 @@ const form = document.getElementById("form");
 const input = document.getElementById("input");
 const send = document.getElementById("send");
 const status = document.getElementById("status");
+const leagueSel = document.getElementById("league");
+const whoami = document.getElementById("whoami");
 let conversationId = null;
+let leagues = [];
 
 fetch("/health").then(r => r.json()).then(h => {
   status.textContent = h.ok
@@ -88,6 +101,42 @@ fetch("/health").then(r => r.json()).then(h => {
     : h.error.split("\n")[0];
   status.classList.toggle("bad", !h.ok);
 }).catch(() => { status.textContent = "server unreachable"; });
+
+function showRoster(leagueId) {
+  const row = leagues.find(l => l.league_id === leagueId);
+  whoami.textContent = row && row.roster_id != null ? `roster ${row.roster_id}` : "";
+}
+
+fetch("/leagues").then(r => r.json()).then(body => {
+  leagues = body.leagues;
+  if (!leagues.length) {
+    status.textContent = "No leagues linked — run: make link-league USERNAME=<you>";
+    status.classList.add("bad");
+    send.disabled = true;
+    leagueSel.disabled = true;
+    return;
+  }
+  for (const l of leagues) {
+    const opt = document.createElement("option");
+    opt.value = l.league_id;
+    // Season disambiguates the same league across years.
+    opt.textContent = `${l.name} · ${l.season} · ${l.format}`;
+    leagueSel.appendChild(opt);
+  }
+  showRoster(leagues[0].league_id);
+}).catch(() => { leagueSel.disabled = true; });
+
+// A thread is pinned to one league, so switching starts a new one. Saying so
+// matters: without the note, a switch looks like the history just vanished.
+leagueSel.addEventListener("change", () => {
+  conversationId = null;
+  showRoster(leagueSel.value);
+  const note = document.createElement("div");
+  note.className = "note";
+  note.textContent = `— switched to ${leagueSel.selectedOptions[0].textContent} · new conversation —`;
+  log.appendChild(note);
+  log.scrollTop = log.scrollHeight;
+});
 
 function addTurn(who, text) {
   const wrap = document.createElement("div");
@@ -123,6 +172,7 @@ form.addEventListener("submit", async (e) => {
   addTurn("user", message);
   input.value = "";
   send.disabled = true;
+  leagueSel.disabled = true;
 
   const turn = addTurn("assistant", "");
   const bubble = turn.querySelector(".bubble");
@@ -133,7 +183,13 @@ form.addEventListener("submit", async (e) => {
     const res = await fetch("/chat", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({message, conversation_id: conversationId}),
+      // Name a league only when starting a thread; an existing one is pinned
+      // server-side. JSON.stringify drops the undefined.
+      body: JSON.stringify({
+        message,
+        conversation_id: conversationId,
+        league_id: conversationId ? undefined : leagueSel.value || undefined,
+      }),
     });
     if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
 
@@ -159,6 +215,13 @@ form.addEventListener("submit", async (e) => {
 
         if (event === "start") {
           conversationId = data.conversation_id;
+          // The server is authoritative. If a thread is pinned somewhere the
+          // dropdown isn't, the dropdown corrects itself — which is what makes
+          // "you can see which league this is" true rather than just displayed.
+          if (data.league_id) {
+            leagueSel.value = data.league_id;
+            showRoster(data.league_id);
+          }
         } else if (event === "tool") {
           tools.push(data.name);
           showTools(turn, tools);
@@ -184,6 +247,7 @@ form.addEventListener("submit", async (e) => {
   } finally {
     bubble.classList.remove("cursor");
     send.disabled = false;
+    leagueSel.disabled = false;
     input.focus();
   }
 });
