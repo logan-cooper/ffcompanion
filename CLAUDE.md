@@ -56,10 +56,85 @@ no API key, no per-token cost, anywhere in this project.
   `eval --json > file` swallows every sign of life and a working run is
   indistinguishable from a hung one.
 - The user's roster_id resolves from team_intent first, then from who owns the
-  roster on Sleeper (league_rosters.owner_id -> league_users.user_id ->
-  display_name, matched against SLEEPER_USERNAME). A fresh install has no
-  team_intent rows, so without the fallback "how does my roster look?" is
-  answered with "give me your roster_id" — a question the user can't answer.
+  roster on Sleeper (league_rosters.owner_id -> league_users.user_id, matched by
+  user_id or display_name). A fresh install has no team_intent rows, so without
+  the fallback "how does my roster look?" is answered with "give me your
+  roster_id" — a question the user can't answer.
+- WHO you are comes from context.sleeper_identity(): the sleeper_account table
+  first, SLEEPER_USERNAME second. The table wins because someone typing their
+  name into the UI is the more explicit statement and the only one that takes
+  effect without a restart — get_settings() is lru_cached. link_leagues() writes
+  the row, so both the CLI and the web panel record it. Match on user_id where
+  possible; a display_name changes when someone renames themselves on Sleeper.
+- Any table added after Phase 8 must be self-healing on read. Every existing
+  warehouse predates it, and list_leagues() runs on every league lookup in both
+  interfaces — a missing table there breaks the whole app, not one feature. See
+  warehouse/account.py: it runs the IF NOT EXISTS DDL from schema.py (one
+  definition, not a copy) before selecting.
+- The page is a SETUP SURFACE, not just a reader: type a Sleeper username, see
+  the leagues that account plays in, pick one. So the web app creates the schema
+  in its lifespan — `make serve` on a fresh clone must not open onto a page
+  whose every request 500s on a table nobody has created.
+- Looking a username up (GET /sleeper/leagues) WRITES NOTHING; linking (POST
+  /leagues/link) writes. Keep the split — a typo should cost one request, not a
+  half-ingested league. The lookup detects format from the raw Sleeper object so
+  dynasty vs redraft is visible while choosing, not discovered after the ingest.
+- The panels (src/advisor/web/panels.py) must report the SAME NUMBERS as the
+  answers beside them, so they go through the same primitives — player_index,
+  get_valuation, rosters.player_entry. What they do NOT reuse is the tool
+  wrappers: those truncate and fit_to_budget for an 8k context, and a browser is
+  not a context window. tests/test_panels.py asserts the agreement directly.
+- /panel/roster?roster_id=N changes WHICH TEAM IS SHOWN, never who is asking.
+  _panel_context always builds the session's own ctx; the roster to display is a
+  separate argument, exactly as in get_my_roster. Rebuilding ctx around the
+  viewed roster marked an opponent's team `is_you` and would have valued their
+  players under their team_intent — the documented rebuild-from-an-id hazard,
+  through a new door. Panels emit your_roster_id and team_intent so a test can
+  check it stayed yours.
+- Sleeper's `starters` array is POSITIONAL against roster_positions minus
+  BN/IR/TAXI, which is what lets the roster panel show a lineup instead of a
+  list. "0" means an empty slot and must stay in place — dropping it shifts
+  every player below it into the wrong slot. If the lengths disagree, emit no
+  slot labels at all; a mislabelled slot is a wrong answer wearing a UI.
+- Don't show a value column that is mostly zeroes. Valuations are floored at
+  replacement level, so ~6 of 27 players on a real roster have a nonzero
+  `future` — correct, but rendered as a column it reads as a verdict on 21
+  players. The panel shows a chip only where there is a value.
+- Rosters and the waiver wire refresh from Sleeper on EVERY league load (web
+  page load, league switch, `make chat` startup, `/league N`). Stats do not —
+  nflverse publishes weekly and that is still `make refresh`. Three things keep
+  it page-load cheap: the four Sleeper calls run in PARALLEL (1.5s of a 1.6s
+  refresh was sequential round trips), nothing is written when the fingerprint
+  is unchanged (0.27s), and everything is fetched before anything is written so
+  a failure leaves the warehouse intact.
+- `players` (nflverse) only lists people on an NFL ROSTER that season, so it
+  cannot name a taxi-squad stash or anyone out of the league — they appeared on
+  their own manager's roster as "(unknown player)". `sleeper_players` mirrors
+  Sleeper's full dump (12,218, unfiltered) and refresh.identify() is the lookup:
+  mirror, then the nflverse crosswalk, then the cached dump on disk.
+- That third fallback is not belt-and-braces. Importing 12k rows takes ~4s
+  (DuckDB is columnar; executemany is WORSE, measured), so the mirror is built
+  only on paths already spending seconds — link_leagues, and refresh's changed
+  branch — and is therefore behind on a fresh install and the week the dump
+  updates. Reading the cached dump costs 0.08s and means identity never waits.
+- The refresh fingerprint hashes what we would STORE, not what Sleeper
+  returned. Volatile response fields (a read marker, a counter) would otherwise
+  look like a trade and every refresh would rewrite everything.
+- refresh_league() NEVER raises and never 500s. Sleeper unreachable comes back
+  ok=False with a reason, because the warehouse copy is a complete working
+  answer that is merely older — this app has to work offline. Same reason
+  Sleeper returning `null` for a league must not delete it.
+- `force` on a refresh skips the share window and re-asks Sleeper; it does NOT
+  force a rewrite. The fingerprint still decides, so `changed` always means the
+  data actually moved.
+- Do NOT put the refresh in _pick_league. eval and eval-compare resolve leagues
+  through it, and a network call there makes a benchmark depend on the weather.
+  `make chat` has --no-sync for offline use.
+- Fixtures that repoint the database must drop players._available_seasons and
+  tools.base._index_cache (conftest does this autouse). They are module-level
+  caches over database state, so a temp database with no stats poisoned
+  `latest_season_with_data` and a LATER test against the real warehouse read
+  `stats_season: None` — a failure that only appears in one test order.
 - Test packaging changes against a FRESH CLONE, not this machine. Both Phase 8
   bugs (no roster_id, and a username check that tested for the key rather than a
   value) were invisible here because local state already supplied what was

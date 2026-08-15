@@ -25,7 +25,27 @@ make serve      # http://127.0.0.1:8000
 RAM against the floor below, and is safe to re-run — every step checks before it
 acts. Roughly 5.5GB total, almost all of it the model.
 
-Then weekly, on Tuesday once Monday Night Football is final:
+Leagues are linked from the browser: **Find my leagues** in the header takes your
+Sleeper username, shows every league that account plays in — with the format
+detected, since dynasty and redraft get different advice — and links the one you
+pick. That is the public username on your profile, not a login; Sleeper's API is
+read-only and takes no password.
+
+The page is three columns: **your roster** on the left, the chat in the middle,
+and on the right a browser for the rest of the league — other teams' rosters, the
+waiver wire ranked by recent form, and the standings. Both side columns toggle
+from the header. Every number in them comes from the same place the answers do,
+so the sidebar and the advice beside it cannot quote different figures.
+
+**Rosters and the waiver wire look after themselves.** Every time you open the
+page or switch leagues, the app pulls that league's rosters, managers and free
+agents from Sleeper before it renders — so a trade or a waiver claim shows up
+without you doing anything. It costs about a quarter of a second when nothing
+has changed, and if Sleeper is unreachable it says so and carries on with the
+saved copy.
+
+Player *stats* are the weekly part, because that is how often nflverse
+publishes them. On Tuesday, once Monday Night Football is final:
 
 ```sh
 make refresh    # new stats + current rosters

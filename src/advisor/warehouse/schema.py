@@ -196,6 +196,57 @@ TABLES: dict[str, str] = {
             PRIMARY KEY (league_id, sleeper_id)
         )
     """,
+    # Sleeper's full player dump, keyed by the id rosters actually hold.
+    #
+    # Distinct from `players`, which comes from nflverse and only lists players
+    # on an NFL roster that season. Dynasty managers stash exactly the people
+    # that excludes — practice squad, suspended, out of the league — and without
+    # this they show up on their own roster as "(unknown player)". Stored
+    # unfiltered: the whole point is to have an answer for every id.
+    "sleeper_players": """
+        CREATE TABLE IF NOT EXISTS sleeper_players (
+            sleeper_id    VARCHAR NOT NULL,
+            player_id     VARCHAR,   -- nflverse gsis_id, when Sleeper has it
+            full_name     VARCHAR,
+            position      VARCHAR,
+            team          VARCHAR,   -- NULL means on no NFL roster
+            status        VARCHAR,   -- Active, Inactive, Practice Squad, ...
+            injury_status VARCHAR,
+            age           INTEGER,
+            years_exp     INTEGER,
+            fetched_at    TIMESTAMP NOT NULL,
+            PRIMARY KEY (sleeper_id)
+        )
+    """,
+    # When a league was last pulled from Sleeper, and a fingerprint of what came
+    # back. The fingerprint covers what we would STORE, not what was received,
+    # so "unchanged" means the rewrite would have been a no-op — which is how a
+    # refresh on every page load stays cheap and avoids blanking
+    # `available_players` while somebody is reading it.
+    "league_sync": """
+        CREATE TABLE IF NOT EXISTS league_sync (
+            league_id   VARCHAR NOT NULL,
+            fingerprint VARCHAR NOT NULL,
+            synced_at   TIMESTAMP NOT NULL,
+            PRIMARY KEY (league_id)
+        )
+    """,
+    # Which Sleeper account is "you". Nothing in league data records this:
+    # league_users lists every manager and none of them is marked as the person
+    # asking, so without it "how does my roster look?" has no subject.
+    #
+    # In the database rather than only in .env because the web UI sets it at
+    # runtime and `get_settings()` is lru_cached — an env-only value would not
+    # take effect until the server restarted, which is a strange thing to ask of
+    # someone who just typed their name into a box. One row: one manager.
+    "sleeper_account": """
+        CREATE TABLE IF NOT EXISTS sleeper_account (
+            username  VARCHAR NOT NULL,  -- display_name; what league_users holds
+            user_id   VARCHAR,           -- stable across a username change
+            linked_at TIMESTAMP NOT NULL,
+            PRIMARY KEY (username)
+        )
+    """,
     # User-set, never fetched. Deliberately its own table so re-linking a league
     # cannot wipe it — record and roster age hint at intent but guess wrong
     # often enough to produce confidently bad advice.

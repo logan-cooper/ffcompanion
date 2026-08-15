@@ -36,26 +36,15 @@ def _trending() -> dict[str, int]:
         return {}
 
 
-def get_available_players(
-    ctx: LeagueContext,
-    position: str | None = None,
-    *,
-    limit: int = MAX_LIMIT,
-) -> dict:
-    """Free agents in this league, best recent production first."""
-    limit = max(1, min(limit, MAX_LIMIT))
+def available_candidates(
+    ctx: LeagueContext, position: str | None = None
+) -> tuple[list[dict], bool]:
+    """Every free agent with production, best recent form first. No cap.
 
-    if position:
-        position = position.upper()
-        if position not in FANTASY_POSITIONS:
-            return {
-                **envelope(ctx),
-                **error(
-                    f"unknown position {position!r}",
-                    f"expected one of {list(FANTASY_POSITIONS)}",
-                ),
-            }
-
+    Returns `(candidates, had_trending)`. Shared with the web panel so the wire
+    the browser shows and the wire the model reads are the same list — the panel
+    only takes more of it, since a browser is not a context window.
+    """
     # No position filter in SQL: `available_players.position` comes from Sleeper
     # while everything downstream (stats, valuation, the position we emit) uses
     # nflverse's. The two disagree often enough that filtering on one and
@@ -69,13 +58,7 @@ def get_available_players(
         [ctx.league_id],
     )
     if not rows:
-        return {
-            **envelope(ctx),
-            **error(
-                "no free agents found",
-                f"league {ctx.league_id} may not be linked; run link-league",
-            ),
-        }
+        return [], True
 
     index = player_index(ctx)
     trending = _trending()
@@ -107,6 +90,44 @@ def get_available_players(
             entry["trending_adds_24h"] = adds
         candidates.append(entry)
 
+    # Recent form leads: the wire is about who is useful now, not who was.
+    candidates.sort(key=lambda c: -c["last3_points_per_game"])
+    return candidates, bool(trending)
+
+
+def get_available_players(
+    ctx: LeagueContext,
+    position: str | None = None,
+    *,
+    limit: int = MAX_LIMIT,
+) -> dict:
+    """Free agents in this league, best recent production first."""
+    limit = max(1, min(limit, MAX_LIMIT))
+
+    if position:
+        position = position.upper()
+        if position not in FANTASY_POSITIONS:
+            return {
+                **envelope(ctx),
+                **error(
+                    f"unknown position {position!r}",
+                    f"expected one of {list(FANTASY_POSITIONS)}",
+                ),
+            }
+
+    if not query(
+        "SELECT 1 FROM available_players WHERE league_id = ? LIMIT 1", [ctx.league_id]
+    ):
+        return {
+            **envelope(ctx),
+            **error(
+                "no free agents found",
+                f"league {ctx.league_id} may not be linked; run link-league",
+            ),
+        }
+
+    candidates, had_trending = available_candidates(ctx, position)
+
     if not candidates:
         return {
             **envelope(ctx),
@@ -117,8 +138,6 @@ def get_available_players(
             ),
         }
 
-    # Recent form leads: the wire is about who is useful now, not who was.
-    candidates.sort(key=lambda c: -c["last3_points_per_game"])
     shown, note = truncate(candidates, limit, "free agents")
 
     payload = {
@@ -129,6 +148,6 @@ def get_available_players(
     }
     if note:
         payload["truncated"] = note
-    if not trending:
+    if not had_trending:
         payload["trending_note"] = "Sleeper trending data unavailable"
     return payload

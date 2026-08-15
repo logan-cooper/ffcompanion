@@ -117,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print every tool call and result. Your main debugging tool.",
     )
+    chat.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="Skip the Sleeper roster pull. Offline, or when you want the "
+        "warehouse exactly as it is.",
+    )
 
     evals = subparsers.add_parser(
         "eval", help="Run the eval suite. Use it to choose a model."
@@ -389,6 +395,24 @@ def _owned_roster(league_id: str) -> int | None:
     return None
 
 
+def _sync(league_id: str) -> None:
+    """Pull this league's current rosters before answering about it.
+
+    Same reason the web page does it on load: rosters move on trades and waiver
+    claims, and advice about a team the user no longer has is worse than a
+    second of startup. Deliberately NOT in `_pick_league` — `eval` and
+    `eval-compare` resolve leagues through it, and a network call there would
+    make a benchmark depend on the weather.
+    """
+    from advisor.warehouse.refresh import refresh_league
+
+    result = refresh_league(league_id)
+    if not result.ok:
+        print(f"  ! {result.reason}")
+    elif result.changed:
+        print(f"  rosters updated — {result.available_players:,} free agents")
+
+
 def _pick_league(league_id: str | None) -> tuple[str, int | None]:
     """Resolve which league and roster to open.
 
@@ -431,6 +455,9 @@ def _cmd_chat(args: argparse.Namespace) -> int:
     except LookupError as exc:
         print(exc)
         return 1
+
+    if not args.no_sync:
+        _sync(league_id)
 
     ctx = load_context(
         league_id,
@@ -501,6 +528,8 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                     if target is None:
                         print(f"no league matching {rest!r}. /leagues for the list.")
                     else:
+                        if not args.no_sync:
+                            _sync(target["league_id"])
                         ctx = load_context(
                             target["league_id"],
                             roster_id=target["roster_id"],

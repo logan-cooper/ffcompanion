@@ -24,8 +24,18 @@ from advisor.valuation import get_valuation
 MAX_PLAYERS_PER_SLOT = 20
 AGE_POSITIONS = ("RB", "WR")
 
+# Sleeper writes "0" into a starting slot nobody is filling.
+EMPTY_STARTING_SLOT = "0"
 
-def _player_entry(line, value, ctx: LeagueContext) -> dict:
+
+def player_entry(line, value, ctx: LeagueContext) -> dict:
+    """One player's line, as every caller reports it.
+
+    Public because the web panels render the same players beside the answers
+    that cite them. Two shapes here would mean the sidebar and the chat quoting
+    different numbers for the same player, which costs more trust than it saves
+    effort.
+    """
     entry = {
         "player_id": line.player_id,
         "name": line.name,
@@ -70,16 +80,19 @@ def get_my_roster(ctx: LeagueContext, roster_id: int | None = None) -> dict:
     payload = {**envelope(ctx), "roster_id": roster_id,
                "team": league_owners(ctx).get(roster_id, "?")}
 
-    unmatched = 0
+    unmatched: list[str] = []
     for slot, sleeper_ids in slots.items():
         entries = []
         for sleeper_id in sleeper_ids:
             line = by_sleeper.get(sleeper_id)
             if line is None:
-                unmatched += 1
+                # "0" is Sleeper's empty starting slot, not a player. Counting
+                # it inflated "N players had no stats" with a gap in the lineup.
+                if sleeper_id != EMPTY_STARTING_SLOT:
+                    unmatched.append(sleeper_id)
                 continue
             value = valuation.player_value(line.player_id, ctx)
-            entries.append(_player_entry(line, value, ctx))
+            entries.append(player_entry(line, value, ctx))
         entries.sort(key=lambda e: -(e.get("win_now", 0) + e.get("future", 0)))
         shown, note = truncate(entries, MAX_PLAYERS_PER_SLOT, slot)
         payload[slot] = shown
@@ -87,9 +100,26 @@ def get_my_roster(ctx: LeagueContext, roster_id: int | None = None) -> dict:
             payload.setdefault("truncated", []).append(note)
 
     if unmatched:
+        # Named, not just counted. The panel beside the answer shows these
+        # players by name, and "you also have 2 players with no stats" next to a
+        # sidebar reading "Tyrone Broden" is the disagreement this app cannot
+        # afford. Sleeper knows everyone; nflverse only lists NFL rosters.
+        from advisor.warehouse.refresh import identify
+
+        known = identify(unmatched)
+        payload["rostered_without_stats"] = [
+            {
+                "name": known.get(s, {}).get("full_name") or f"Sleeper player {s}",
+                "position": known.get(s, {}).get("position"),
+                "team": known.get(s, {}).get("team"),
+                "status": known.get(s, {}).get("status"),
+            }
+            for s in unmatched
+        ]
         payload["note"] = (
-            f"{unmatched} rostered players had no {ctx.stats_season} stats "
-            "(rookies, practice squad, or retired)"
+            f"{len(unmatched)} rostered players had no {ctx.stats_season} stats "
+            "(rookies, practice squad, or out of the league); they are listed "
+            "under rostered_without_stats"
         )
 
     picks = _owned_picks(ctx, roster_id, valuation)

@@ -23,6 +23,7 @@ from advisor.league_format import (
     detect_format,
 )
 from advisor.sources import sleeper
+from advisor.warehouse import account
 from advisor.warehouse.schema import create_schema
 
 # Rows per multi-row INSERT. The free-agent pool is ~2,900 players per league,
@@ -43,7 +44,7 @@ class LeagueSummary:
     traded_picks: int
 
 
-def _insert_many(
+def insert_many(
     table: str, columns: Sequence[str], rows: Iterable[Sequence[Any]]
 ) -> int:
     """Insert rows in chunks, binding every value."""
@@ -102,7 +103,7 @@ def _load_league(league: dict, season: int, detection: FormatDetection) -> None:
 
 def _load_users(league_id: str, users: list[dict]) -> int:
     query("DELETE FROM league_users WHERE league_id = ?", [league_id])
-    return _insert_many(
+    return insert_many(
         "league_users",
         ("league_id", "user_id", "display_name", "team_name"),
         [
@@ -119,7 +120,7 @@ def _load_users(league_id: str, users: list[dict]) -> int:
 
 def _load_rosters(league_id: str, rosters: list[dict]) -> int:
     query("DELETE FROM league_rosters WHERE league_id = ?", [league_id])
-    return _insert_many(
+    return insert_many(
         "league_rosters",
         (
             "league_id", "roster_id", "owner_id", "players", "starters",
@@ -171,7 +172,7 @@ def _load_traded_picks(league_id: str, picks: list[dict]) -> int:
                 p.get("previous_owner_id"),
             )
         )
-    return _insert_many(
+    return insert_many(
         "traded_picks",
         (
             "league_id", "season", "round", "original_roster_id",
@@ -200,7 +201,7 @@ def _load_available_players(
             for pid in roster.get(key) or []:
                 rostered.add(str(pid))
 
-    inserted = _insert_many(
+    inserted = insert_many(
         "available_players",
         ("league_id", "sleeper_id", "player_id", "full_name", "position", "team"),
         [
@@ -262,14 +263,31 @@ def get_team_intent(league_id: str, roster_id: int) -> str:
     return rows[0]["intent"] if rows else DEFAULT_TEAM_INTENT
 
 
-def ingest_league(league: dict, season: int, pool: dict[str, dict]) -> LeagueSummary:
-    """Load one already-fetched league object and everything hanging off it."""
+def ingest_league(
+    league: dict,
+    season: int,
+    pool: dict[str, dict],
+    *,
+    users: list[dict] | None = None,
+    rosters: list[dict] | None = None,
+    picks: list[dict] | None = None,
+) -> LeagueSummary:
+    """Load one already-fetched league object and everything hanging off it.
+
+    `users`/`rosters`/`picks` can be supplied by a caller that already has them.
+    The refresh path fetches all four in parallel to decide whether anything
+    changed; without this it would then fetch three of them a second time to do
+    the write.
+    """
     league_id = league["league_id"]
     detection = detect_format(league)
 
-    users = sleeper.get_league_users(league_id)
-    rosters = sleeper.get_rosters(league_id)
-    picks = sleeper.get_traded_picks(league_id)
+    if users is None:
+        users = sleeper.get_league_users(league_id)
+    if rosters is None:
+        rosters = sleeper.get_rosters(league_id)
+    if picks is None:
+        picks = sleeper.get_traded_picks(league_id)
 
     _load_league(league, season, detection)
     n_users = _load_users(league_id, users)
@@ -307,6 +325,14 @@ def link_leagues(
         raise LookupError(f"no Sleeper user named {username!r}")
     user_id = user["user_id"]
 
+    # Record who "you" are while Sleeper has just told us. Roster ownership is
+    # not derivable from league data — league_users lists every manager and
+    # marks none of them as the person asking — so without this, linking
+    # succeeds and "how does my roster look?" still has no subject. Store
+    # Sleeper's display_name rather than what was typed: a user id also
+    # resolves through this endpoint, and league_users holds display names.
+    account.set_account(user.get("display_name") or username, user_id)
+
     leagues = sleeper.get_user_leagues(user_id, season)
     if league_id:
         leagues = [lg for lg in leagues if lg["league_id"] == league_id]
@@ -316,5 +342,13 @@ def link_leagues(
         raise LookupError(f"{username} has no NFL leagues in {season}")
 
     pool = sleeper.fantasy_player_pool(sleeper.get_all_players(refresh=refresh))
+    summaries = [ingest_league(lg, season, pool) for lg in leagues]
 
-    return user_id, [ingest_league(lg, season, pool) for lg in leagues]
+    # First link is where the player mirror gets built. Imported here rather
+    # than on a page load because it costs seconds, and linking is already a
+    # deliberate wait.
+    from advisor.warehouse.refresh import sync_players
+
+    sync_players()
+
+    return user_id, summaries

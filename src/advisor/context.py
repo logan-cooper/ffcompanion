@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from advisor.db import query
@@ -97,6 +98,37 @@ def weeks_completed(season: int) -> int:
     return rows[0]["week"] or 0 if rows else 0
 
 
+def current_nfl_season(today: date | None = None) -> int:
+    """The NFL season a date falls in.
+
+    A season is named for the year it STARTS and opens in September, so before
+    September the current season is last calendar year. Using the calendar year
+    year-round asks Sleeper and nflverse for a season that does not exist yet —
+    which is exactly how `make refresh` 404'd in August. September is the
+    cutover here and in scripts/refresh.sh; keep them in step.
+    """
+    today = today or date.today()
+    return today.year if today.month >= 9 else today.year - 1
+
+
+def sleeper_identity() -> tuple[str | None, str | None]:
+    """Who "you" are on Sleeper, as (username, user_id). Either may be None.
+
+    The account recorded in the database wins over `SLEEPER_USERNAME`. It is the
+    more recent and more explicit statement — someone typed it into the app —
+    and it is the only one of the two that can change without a restart, since
+    `get_settings()` is `lru_cache`d.
+    """
+    from advisor.config import get_settings
+    from advisor.warehouse.account import get_account
+
+    account = get_account()
+    if account and (account["username"] or "").strip():
+        return account["username"].strip(), account["user_id"]
+
+    return (get_settings().sleeper_username or "").strip() or None, None
+
+
 def list_leagues() -> list[dict[str, Any]]:
     """Every linked league, best default first.
 
@@ -109,9 +141,7 @@ def list_leagues() -> list[dict[str, Any]]:
     ownership record, per the rule that intent is never inferred. Both inputs
     are returned alongside so callers can tell which applied.
     """
-    from advisor.config import get_settings
-
-    username = (get_settings().sleeper_username or "").strip() or None
+    username, user_id = sleeper_identity()
 
     return query(
         """
@@ -134,15 +164,18 @@ def list_leagues() -> list[dict[str, Any]]:
             FROM team_intent GROUP BY league_id
         ) intent ON intent.league_id = l.league_id
         -- Which roster this Sleeper account owns. Nothing in the league data
-        -- marks which manager is you, so it comes from the configured username.
-        -- Unset is the fresh-install state: lower(NULL) matches nothing, so the
-        -- subquery is simply empty rather than an error.
+        -- marks which manager is you, so it comes from the recorded identity.
+        -- user_id is the exact match and is preferred; display_name is what a
+        -- SLEEPER_USERNAME set by hand gives us, and someone can rename
+        -- themselves on Sleeper without the id changing. Unset is the
+        -- fresh-install state: both comparisons against NULL match nothing, so
+        -- the subquery is simply empty rather than an error.
         LEFT JOIN (
             SELECT r.league_id, MIN(r.roster_id) AS roster_id
             FROM league_rosters r
             JOIN league_users u
               ON u.league_id = r.league_id AND u.user_id = r.owner_id
-            WHERE lower(u.display_name) = lower(?)
+            WHERE u.user_id = ? OR lower(u.display_name) = lower(?)
             GROUP BY r.league_id
         ) owned ON owned.league_id = l.league_id
         ORDER BY
@@ -158,7 +191,7 @@ def list_leagues() -> list[dict[str, Any]]:
             l.season DESC,
             l.league_id
         """,
-        [username],
+        [user_id, username],
     )
 
 

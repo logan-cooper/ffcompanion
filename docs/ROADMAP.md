@@ -1158,6 +1158,174 @@ parse, the size warning precedes the prompt, the hardware floor is stated, every
 `scripts/`**. That last one is the claim the whole project rests on, so it is
 asserted rather than trusted.
 
+### Built (2026-08-13) — linking a league from the browser
+
+Setup used to require a terminal: `make link-league USERNAME=<you> SEASON=2025`,
+with a username you had to know to supply and a league id you had to look up. The
+header now has **Find my leagues** — type a Sleeper username, see every league
+that account plays in, pick one.
+
+**Looking up writes nothing; linking writes.** `GET /sleeper/leagues` calls
+Sleeper and returns what it finds without touching the database, so a typo costs
+one request rather than a half-ingested league. `POST /leagues/link` does the
+ingest, and only for the league that was chosen — linking everything found would
+put a league the user did not ask about ahead of the one they did.
+
+**Format is shown while choosing, not after ingesting.** `detect_format` runs on
+the raw Sleeper object, so the list reads *dynasty · superflex · 12 teams* before
+anything is committed. That is the field that changes the advice, so it is the
+field that should inform the choice.
+
+**Who you are moved into the database.** `sleeper_account` joins `team_intent`
+and `conversations` as user-set data in its own table. It has to be there rather
+than only in `.env`, because `get_settings()` is `lru_cache`d — an env-only value
+would not take effect until the server restarted, which is a strange thing to
+require of someone who just typed their name into a box. `link_leagues()` writes
+it, so the CLI path records it too, and ownership now matches on `user_id` first
+so a rename on Sleeper does not orphan a roster. Verified with `SLEEPER_USERNAME`
+blanked entirely: link a league in the browser, and the next turn resolves the
+right roster with no `.env` and no restart.
+
+**The page is a setup surface now**, so the app creates its schema at startup —
+`make serve` on a fresh clone must not open onto a page whose every request 500s
+on a table nobody has created. Same reasoning one level down: `account.py` runs
+its own `IF NOT EXISTS` DDL (from `schema.py`, so there is one definition) before
+reading, because every warehouse built before this feature lacks the table and
+`list_leagues()` runs on *every* league lookup in both interfaces.
+
+**A bug found by re-reading, not by a test.** `loadLeagues()` returned early on
+the empty case, so `if (body && !body.leagues.length) openSetup()` never fired —
+the panel would not have opened on the fresh install it exists for. Nothing here
+type-checks: `tests/test_web.py` now asserts every `getElementById` in the page
+matches a real `id`, which catches the class of failure where a mistyped id
+silently returns null and the button it belonged to is simply dead.
+
+### Built (2026-08-13) — three columns: your roster, the chat, the league
+
+The chat could always tell you about your roster; you just could not *look* at
+it. Now the page is `roster | chat | league`: your team on the left, and on the
+right a tabbed browser for **Teams**, **Waivers** and **Standings**. Both columns
+toggle from the header and start closed on a narrow window rather than squeezing
+the chat into a gutter.
+
+**The panels and the answers cannot disagree.** Everything renders from the same
+primitives the tools use — `player_index` for scoring, `get_valuation` for value,
+`rosters.player_entry` for the shape (promoted from `_player_entry` for exactly
+this). `tests/test_panels.py` asserts the agreement field by field rather than
+trusting it, and `waivers.available_candidates` was extracted so the wire the
+browser shows and the wire the model reads are one list.
+
+What the panels deliberately do **not** reuse is the tool wrappers. Those cap
+lists and shrink payloads to fit an 8k context; a browser is not a context
+window, so the panel shows 40 free agents where the model gets 15, and a whole
+31-player dynasty roster where the model gets what fits.
+
+**The lineup is real.** Sleeper's `starters` array is positional against
+`roster_positions` minus BN/IR/TAXI, so each starter is labelled with the slot it
+fills — and `"0"`, Sleeper's empty slot, stays in place, because dropping it
+shifts every player below into the wrong slot. When the lengths disagree the
+labels are omitted entirely: a mislabelled slot is a wrong answer wearing a UI.
+
+**Two presentation decisions that are really honesty decisions.** Valuations are
+floored at replacement level, so only 6 of 27 players on a real roster have a
+nonzero `future` — correct, but a column of zeroes reads as a verdict on the
+other 21, so a value appears as a chip only where there is one. And rostered
+players with no stats (rookies, call-ups: four of them on the test roster) are
+named and labelled rather than silently dropped, which is right for a token
+budget and looks broken in a panel.
+
+**One bug and one hazard, both found by running it.** `/panel/roster?roster_id=N`
+rebuilt the context around the roster being *viewed*, so an opponent's team came
+back `is_you: true` and would have been valued under *their* `team_intent` —
+the rebuild-from-an-id hazard this project already documents, arriving through a
+new door. Fixed by keeping "who is asking" and "what to display" separate, as
+`get_my_roster` always did. Separately, `players._available_seasons` is an
+`lru_cache` over database state: a temp database with no stats poisoned it and a
+*later* test against the real warehouse read `stats_season: None`. Now dropped
+between tests by an autouse fixture.
+
+**The survival league finally got exercised**, incidentally — it was the one
+format never driven end to end. It renders: 8 starters, no bench, and standings
+that refuse to present sixteen 0-0 records as a table.
+
+### Built (2026-08-14) — rosters that are current, not weekly
+
+`make refresh` pulled rosters once a week, which meant the app could confidently
+recommend starting a player dropped on Tuesday. Now every league load — page
+load, league switch, `make chat` startup, `/league N` — pulls the league's
+rosters, managers, traded picks and free-agent pool from Sleeper first, and the
+panels render after it. Stats are untouched: nflverse publishes weekly and that
+is still `make refresh`'s job.
+
+The whole question was whether this could live in the page-load path. Measured
+against three real leagues it costs **0.27s** when nothing has changed and 1.6s
+when something has, from three decisions:
+
+- **The four Sleeper calls run in parallel.** They are independent, each a ~0.4s
+  round trip, and sequentially they were 1.5s of the 1.6s.
+- **Nothing is written when nothing changed.** A fingerprint of the fetched data
+  is compared with the last one, and most leagues on most loads skip the rewrite
+  entirely. The fingerprint covers *what we would store*, not what was received
+   — hashing raw responses would let a read marker or a counter look like a
+  trade, and then every refresh rewrites everything, which is the cost this
+  exists to avoid.
+- **`ingest_league` takes the data it was given.** It re-fetched users, rosters
+  and picks itself, so a changed league would have cost seven requests where
+  four do.
+
+**Failure is a fact, not an exception.** `refresh_league` never raises. Sleeper
+unreachable returns `ok: false` with a reason and the panels render the saved
+rosters, because the warehouse copy is a complete working answer that is merely
+older — and an app whose premise is local-first cannot fall over when a
+third-party API blips. Sleeper answering `null` for a league (its idiom for
+"gone") must not delete a working league either.
+
+**Two states worth naming.** `available_players` is a delete-and-rewrite, so a
+reader mid-refresh could see an empty wire; skipping unchanged leagues means
+that window almost never opens. And the fingerprint claims "a rewrite would be a
+no-op", which is only true if the last write *finished* — an ingest interrupted
+between the DELETE and the INSERT would otherwise leave an empty wire that every
+later refresh politely skips, stuck with nothing saying why. `_looks_loaded`
+checks the data is really there before trusting the fingerprint.
+
+Deliberately **not** in `_pick_league`: `eval` and `eval-compare` resolve leagues
+through it, and a network call there makes a benchmark depend on the weather.
+`make chat --no-sync` opts out for offline use.
+
+### Built (2026-08-14) — every rostered player has a name
+
+Two players in Beer Ball Empire rendered as **"(unknown player)"** on their own
+manager's roster: Tyrone Broden and Henry Ruggs, both without an NFL team.
+
+The cause is a source mismatch that had been there since Phase 1. `players`
+comes from nflverse, which publishes *NFL rosters* — so it lists only people on
+a team that season. Dynasty managers stash exactly who that excludes: practice
+squad, suspended, injured out for the year, out of the league entirely. Sleeper's
+dump has all 12,218 of them and we were downloading it every week, filtering it
+down to the fantasy pool for the waiver wire, and throwing the rest away.
+
+`sleeper_players` now mirrors the dump **unfiltered**, and `refresh.identify()`
+is the one lookup: the mirror, then the nflverse crosswalk, then the cached dump
+on disk. Across all three linked leagues, unidentified players went from 2 to 0.
+
+**The third fallback is load-bearing, not belt-and-braces.** Importing 12k rows
+costs ~4s — DuckDB is columnar and row inserts are slow, and `executemany`
+measured *worse* (7.7s) — so the mirror is built only where seconds are already
+being spent: `link_leagues`, and the branch of a refresh that was writing anyway.
+That means it is legitimately behind on a fresh install and in the week the dump
+updates. Reading the cached dump costs 0.08s, so identity never waits for the
+optimisation.
+
+**The label improved with the data.** "(unknown player)" became the name, and
+"no 2025 games" became the specific reason — *no NFL team*, or the Sleeper status
+— which is the half a manager can act on.
+
+**And the model says the same thing.** `get_my_roster` counted these players
+("2 rostered players had no stats") where the panel beside it now shows names;
+it lists them under `rostered_without_stats` through the same lookup. Fixed one
+adjacent bug on the way: `"0"`, Sleeper's empty starting slot, was being counted
+as a player without stats and inflating that number.
+
 ---
 
 ## Deliberately deferred

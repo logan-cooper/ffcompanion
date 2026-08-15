@@ -28,15 +28,15 @@
   header h1 { font-size: 1rem; margin: 0; font-weight: 650; }
   .meta { color: var(--dim); font-size: .82rem; }
   .meta.bad { color: var(--warn); }
-  select {
+  select, input[type="text"] {
     background: var(--panel); color: var(--text); border: 1px solid var(--line);
     border-radius: 6px; padding: .2rem .4rem; font: inherit; font-size: .82rem;
     max-width: 20rem;
   }
-  select:disabled { opacity: .55; }
+  select:disabled, input:disabled { opacity: .55; }
   .note { max-width: 46rem; margin: 0 auto 1rem; color: var(--dim);
           font-size: .78rem; text-align: center; }
-  #log { flex: 1; overflow-y: auto; padding: 1rem; }
+  #log { flex: 1; min-height: 0; overflow-y: auto; padding: 1rem; }
   .turn { max-width: 46rem; margin: 0 auto 1.25rem; }
   .who { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
          color: var(--dim); margin-bottom: .3rem; }
@@ -63,26 +63,179 @@
     padding: 0 1.1rem; font: inherit; font-weight: 600; cursor: pointer;
   }
   button:disabled { opacity: .5; cursor: default; }
+  button.ghost {
+    background: transparent; color: var(--dim); border: 1px solid var(--line);
+    padding: .18rem .6rem; font-size: .82rem; font-weight: 500;
+  }
+  button.ghost.on { color: var(--accent); border-color: var(--accent); }
+  #find { color: var(--accent); }
   .hint { max-width: 46rem; margin: .4rem auto 0; color: var(--dim); font-size: .74rem; }
+
+  /* ---- three columns: your roster | chat | the league ---- */
+  #main { flex: 1; display: flex; min-height: 0; }
+  /* Both min-* are load-bearing: a flex item defaults to min-height:auto, which
+     stops #log shrinking and makes the whole page scroll instead of the log. */
+  #center { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .side {
+    flex: none; overflow-y: auto; padding: .7rem .8rem 1.5rem;
+    background: var(--bg);
+  }
+  .side[hidden] { display: none; }
+  #left { width: 17.5rem; border-right: 1px solid var(--line); }
+  #right { width: 21rem; border-left: 1px solid var(--line); }
+  .side h2 {
+    margin: 0; font-size: .82rem; font-weight: 650;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .sect {
+    font-size: .67rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin: .9rem 0 .25rem;
+  }
+  .prow {
+    display: grid; grid-template-columns: 2.5rem 1fr auto; gap: .4rem;
+    align-items: baseline; padding: .2rem .3rem; border-radius: 5px;
+    font-size: .8rem;
+  }
+  .prow:hover { background: var(--panel); }
+  .prow.me { box-shadow: inset 2px 0 0 var(--accent); }
+  .prow .slot {
+    color: var(--dim); font-size: .66rem; letter-spacing: .04em;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+  }
+  .prow .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prow .nm small { color: var(--dim); font-size: .72rem; }
+  .prow .num { font-variant-numeric: tabular-nums; font-size: .78rem; }
+  .prow .num.dim { color: var(--dim); }
+  .val {
+    font-size: .64rem; color: var(--accent); border: 1px solid var(--line);
+    border-radius: 999px; padding: 0 .3rem; margin-left: .25rem;
+  }
+  .tabs { display: flex; gap: .25rem; margin: .1rem 0 .5rem; }
+  .tab {
+    flex: 1; padding: .28rem .2rem; font-size: .74rem; font-weight: 500;
+    background: transparent; color: var(--dim); cursor: pointer;
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  .tab.on { background: var(--panel); color: var(--text); border-color: var(--accent); }
+  .chips { display: flex; gap: .2rem; flex-wrap: wrap; margin-bottom: .4rem; }
+  .chip {
+    padding: .1rem .45rem; font-size: .7rem; font-weight: 500;
+    background: transparent; color: var(--dim); cursor: pointer;
+    border: 1px solid var(--line); border-radius: 999px;
+  }
+  .chip.on { color: var(--text); border-color: var(--accent); }
+  .srow {
+    display: grid; grid-template-columns: 1.4rem 1fr 2.9rem 3.4rem; gap: .35rem;
+    align-items: baseline; padding: .2rem .3rem; border-radius: 5px;
+    font-size: .8rem;
+  }
+  .srow:hover { background: var(--panel); cursor: pointer; }
+  .srow.me { box-shadow: inset 2px 0 0 var(--accent); }
+  .srow .rk { color: var(--dim); font-size: .7rem; }
+  .srow .tm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .srow .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .caveat { color: var(--dim); font-size: .7rem; margin-top: .7rem; }
+  .caveat.warn { color: var(--warn); }
+  select.slim { max-width: 100%; width: 100%; margin-bottom: .5rem; }
+
+  /* Below this the three columns stop fitting, so they start closed and the
+     header toggles bring them back one at a time. */
+  @media (max-width: 1180px) { #right { width: 19rem; } }
+
+  /* ---- find-your-leagues panel ---- */
+  #setup[hidden] { display: none; }
+  #setup {
+    position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.55);
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 4rem 1rem 1rem; overflow-y: auto;
+  }
+  .card {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
+    width: min(36rem, 100%); padding: 1.1rem 1.2rem 1.2rem;
+  }
+  .card h2 { margin: 0; font-size: 1rem; }
+  .card-head { display: flex; justify-content: space-between; align-items: center;
+               gap: 1rem; margin-bottom: .35rem; }
+  .card p { margin: .35rem 0 .9rem; }
+  #lookup { display: flex; gap: .5rem; max-width: none; flex-wrap: wrap; }
+  #lookup input[type="text"] { flex: 1; min-width: 11rem; max-width: none;
+                               padding: .45rem .6rem; font-size: .9rem; }
+  #lookup select { padding: .45rem .4rem; font-size: .9rem; }
+  #lookup button { padding: .45rem 1rem; }
+  #found { margin-top: .9rem; display: flex; flex-direction: column; gap: .4rem; }
+  .found-row {
+    display: flex; align-items: center; gap: .6rem; padding: .55rem .7rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  }
+  .found-name { flex: 1; min-width: 0; }
+  .found-name strong { display: block; overflow: hidden; text-overflow: ellipsis;
+                       white-space: nowrap; font-weight: 600; }
+  .found-row button { padding: .3rem .7rem; font-size: .82rem; white-space: nowrap; }
+  .badge { font-size: .7rem; color: var(--dim); border: 1px solid var(--line);
+           border-radius: 999px; padding: .05rem .45rem; }
+  #setup-status { margin-top: .8rem; }
 </style>
 </head>
 <body>
 <header>
   <h1>ffcompanion</h1>
   <select id="league" title="Which league answers are about"></select>
+  <button id="toggle-left" class="ghost" type="button">My roster</button>
+  <button id="toggle-right" class="ghost" type="button">League</button>
+  <button id="find" class="ghost" type="button">Find my leagues</button>
   <span class="meta" id="whoami"></span>
+  <span class="meta" id="sync"></span>
   <span class="meta" id="status">checking…</span>
 </header>
 
-<div id="log"></div>
+<!-- Opens by itself when nothing is linked: on a fresh install this panel is
+     the whole setup, and telling someone to go run a make target in another
+     window is a worse first screen than a box asking for their name. -->
+<div id="setup" hidden>
+  <div class="card">
+    <div class="card-head">
+      <h2>Find your leagues</h2>
+      <button id="setup-close" class="ghost" type="button">Close</button>
+    </div>
+    <p class="meta">
+      Your Sleeper username — the public one on your profile, not your team
+      name. Sleeper's API is read-only and needs no password, and this request
+      goes to Sleeper and nowhere else.
+    </p>
+    <form id="lookup">
+      <input id="username" type="text" placeholder="Sleeper username"
+             autocomplete="off" autocapitalize="off" spellcheck="false">
+      <select id="season" title="Which season's leagues to look up"></select>
+      <button id="lookup-go" type="submit">Find leagues</button>
+    </form>
+    <div id="found"></div>
+    <div class="meta" id="setup-status"></div>
+  </div>
+</div>
 
-<footer>
-  <form id="form">
-    <textarea id="input" rows="1" placeholder="Ask about your roster, a trade, the waiver wire…" autofocus></textarea>
-    <button id="send" type="submit">Ask</button>
-  </form>
-  <div class="hint">Runs on this machine. Enter sends, Shift+Enter for a new line.</div>
-</footer>
+<div id="main">
+  <aside id="left" class="side"></aside>
+
+  <section id="center">
+    <div id="log"></div>
+    <footer>
+      <form id="form">
+        <textarea id="input" rows="1" placeholder="Ask about your roster, a trade, the waiver wire…" autofocus></textarea>
+        <button id="send" type="submit">Ask</button>
+      </form>
+      <div class="hint">Runs on this machine. Enter sends, Shift+Enter for a new line.</div>
+    </footer>
+  </section>
+
+  <aside id="right" class="side">
+    <div class="tabs">
+      <button class="tab" type="button" data-tab="teams">Teams</button>
+      <button class="tab" type="button" data-tab="waivers">Waivers</button>
+      <button class="tab" type="button" data-tab="standings">Standings</button>
+    </div>
+    <div id="right-body"></div>
+  </aside>
+</div>
 
 <script>
 const log = document.getElementById("log");
@@ -92,8 +245,18 @@ const send = document.getElementById("send");
 const status = document.getElementById("status");
 const leagueSel = document.getElementById("league");
 const whoami = document.getElementById("whoami");
+const sync = document.getElementById("sync");
+const setup = document.getElementById("setup");
+const findBtn = document.getElementById("find");
+const lookup = document.getElementById("lookup");
+const usernameInput = document.getElementById("username");
+const seasonSel = document.getElementById("season");
+const lookupGo = document.getElementById("lookup-go");
+const found = document.getElementById("found");
+const setupStatus = document.getElementById("setup-status");
 let conversationId = null;
 let leagues = [];
+let hasStats = true;
 
 fetch("/health").then(r => r.json()).then(h => {
   status.textContent = h.ok
@@ -102,20 +265,31 @@ fetch("/health").then(r => r.json()).then(h => {
   status.classList.toggle("bad", !h.ok);
 }).catch(() => { status.textContent = "server unreachable"; });
 
+fetch("/data-status").then(r => r.json())
+  .then(d => { hasStats = (d.seasons || []).length > 0; })
+  .catch(() => {});
+
 function showRoster(leagueId) {
   const row = leagues.find(l => l.league_id === leagueId);
   whoami.textContent = row && row.roster_id != null ? `roster ${row.roster_id}` : "";
 }
 
-fetch("/leagues").then(r => r.json()).then(body => {
+function note(text) {
+  const el = document.createElement("div");
+  el.className = "note";
+  el.textContent = text;
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+}
+
+// Re-read after a link rather than patching the list client-side: the server's
+// ordering is what decides which league is the default, and a second copy of
+// that ordering here would drift from it.
+async function loadLeagues(select) {
+  const body = await fetch("/leagues").then(r => r.json());
   leagues = body.leagues;
-  if (!leagues.length) {
-    status.textContent = "No leagues linked — run: make link-league USERNAME=<you>";
-    status.classList.add("bad");
-    send.disabled = true;
-    leagueSel.disabled = true;
-    return;
-  }
+
+  leagueSel.innerHTML = "";
   for (const l of leagues) {
     const opt = document.createElement("option");
     opt.value = l.league_id;
@@ -123,19 +297,539 @@ fetch("/leagues").then(r => r.json()).then(body => {
     opt.textContent = `${l.name} · ${l.season} · ${l.format}`;
     leagueSel.appendChild(opt);
   }
-  showRoster(leagues[0].league_id);
+
+  if (!usernameInput.value && body.username) usernameInput.value = body.username;
+  if (!seasonSel.options.length) {
+    for (const s of body.seasons || []) {
+      const opt = document.createElement("option");
+      opt.value = s;
+      opt.textContent = s === body.season + 1 ? `${s} (upcoming)` : s;
+      seasonSel.appendChild(opt);
+    }
+    seasonSel.value = body.season;
+  }
+
+  const empty = !leagues.length;
+  send.disabled = empty;
+  leagueSel.disabled = empty;
+  // League state goes in #whoami, model state in #status. Sharing one slot made
+  // them race: two fetches in flight, and whichever landed second won.
+  whoami.classList.toggle("bad", empty);
+  if (empty) {
+    whoami.textContent = "no leagues linked";
+  } else {
+    if (select && leagues.some(l => l.league_id === select)) leagueSel.value = select;
+    showRoster(leagueSel.value);
+  }
+  // Returned on both paths on purpose: the empty case is the one the caller
+  // cares about, and an early `return` here meant the setup panel never opened
+  // on the fresh install it exists for.
+  return body;
+}
+
+loadLeagues().then(body => {
+  // Nothing linked is not an error state to explain, it is the setup step —
+  // so open it instead of describing it.
+  if (!body.leagues.length) openSetup();
+  else enterLeague();
 }).catch(() => { leagueSel.disabled = true; });
+
+// ------------------------------------------------------------------- setup
+
+function openSetup() {
+  setup.hidden = false;
+  usernameInput.focus();
+  usernameInput.select();
+}
+
+function closeSetup() {
+  setup.hidden = true;
+  input.focus();
+}
+
+findBtn.addEventListener("click", openSetup);
+document.getElementById("setup-close").addEventListener("click", closeSetup);
+setup.addEventListener("click", e => { if (e.target === setup) closeSetup(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !setup.hidden) closeSetup();
+});
+
+lookup.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const username = usernameInput.value.trim();
+  if (!username) return;
+
+  found.innerHTML = "";
+  setupStatus.classList.remove("bad");
+  setupStatus.textContent = `Asking Sleeper what ${username} plays in…`;
+  lookupGo.disabled = true;
+
+  try {
+    const url = `/sleeper/leagues?username=${encodeURIComponent(username)}`
+      + `&season=${encodeURIComponent(seasonSel.value)}`;
+    const res = await fetch(url);
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.statusText);
+
+    if (!body.leagues.length) {
+      setupStatus.textContent =
+        `${body.username} has no NFL leagues in ${body.season}. Try another season.`;
+      return;
+    }
+    setupStatus.textContent =
+      `${body.leagues.length} league${body.leagues.length > 1 ? "s" : ""}`
+      + ` for ${body.username} in ${body.season}. Pick the one to get advice about.`;
+    for (const league of body.leagues) found.appendChild(leagueRow(league, body.username));
+  } catch (err) {
+    setupStatus.textContent = err.message;
+    setupStatus.classList.add("bad");
+  } finally {
+    lookupGo.disabled = false;
+  }
+});
+
+function leagueRow(league, username) {
+  const row = document.createElement("div");
+  row.className = "found-row";
+
+  const name = document.createElement("div");
+  name.className = "found-name";
+  const title = document.createElement("strong");
+  title.textContent = league.name || league.league_id;
+  name.appendChild(title);
+
+  const facts = document.createElement("span");
+  facts.className = "meta";
+  // Format is the one that changes the advice, so it leads.
+  facts.textContent = [
+    league.format,
+    league.superflex ? "superflex" : null,
+    league.total_rosters ? `${league.total_rosters} teams` : null,
+  ].filter(Boolean).join(" · ");
+  name.appendChild(facts);
+  row.appendChild(name);
+
+  if (league.linked) {
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = "linked";
+    row.appendChild(badge);
+  }
+
+  const use = document.createElement("button");
+  use.type = "button";
+  use.textContent = league.linked ? "Switch to it" : "Use this league";
+  use.addEventListener("click", () => choose(league, username, use));
+  row.appendChild(use);
+  return row;
+}
+
+async function choose(league, username, button) {
+  // Already in the warehouse: selecting it is instant, and re-pulling rosters
+  // is what `make refresh` is for.
+  if (league.linked) {
+    await useLeague(league.league_id, league.name);
+    return;
+  }
+
+  const buttons = found.querySelectorAll("button");
+  buttons.forEach(b => { b.disabled = true; });
+  button.textContent = "Linking…";
+  setupStatus.classList.remove("bad");
+  setupStatus.textContent =
+    "Pulling rosters and the free-agent pool from Sleeper. The first link also"
+    + " downloads Sleeper's player list (~14MB), so it can take a minute.";
+
+  try {
+    const res = await fetch("/leagues/link", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        username, season: Number(seasonSel.value), league_id: league.league_id,
+      }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.statusText);
+    // Re-render the row as linked, so reopening the panel doesn't offer to
+    // spend another minute ingesting a league that is already here.
+    league.linked = true;
+    button.closest(".found-row").replaceWith(leagueRow(league, username));
+    await useLeague(body.league.league_id, body.league.name);
+  } catch (err) {
+    setupStatus.textContent = err.message;
+    setupStatus.classList.add("bad");
+    button.textContent = "Use this league";
+  } finally {
+    buttons.forEach(b => { b.disabled = false; });
+  }
+}
+
+async function useLeague(leagueId, name) {
+  await loadLeagues(leagueId);
+  // A thread is pinned to one league, so a switch starts a new one.
+  conversationId = null;
+  closeSetup();
+  enterLeague();
+  note(`— now advising on ${name} · new conversation —`);
+  // Linking a league is not the same as having stats to reason about, and the
+  // difference otherwise shows up much later as a thin answer.
+  if (!hasStats) {
+    note("No player stats ingested yet — run `make warehouse` for real numbers.");
+  }
+}
+
+// ----------------------------------------------------------------- panels
+//
+// Your roster on the left, the rest of the league on the right. Every number
+// here comes from the same place the answers do, so the two cannot disagree.
+
+const left = document.getElementById("left");
+const right = document.getElementById("right");
+const rightBody = document.getElementById("right-body");
+const toggleLeft = document.getElementById("toggle-left");
+const toggleRight = document.getElementById("toggle-right");
+
+const panel = {tab: "standings", rosterId: null, position: ""};
+let standingsCache = null;
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function q(params) {
+  return Object.entries(params)
+    .filter(([, v]) => v !== null && v !== undefined && v !== "")
+    .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+}
+
+// Hover detail rather than more columns: a sidebar has room for one number, and
+// which number is right depends on the question being asked.
+function detailOf(p) {
+  if (p.no_stats) {
+    return [
+      p.no_stats, p.injury_status, p.age != null ? `age ${p.age}` : null,
+    ].filter(Boolean).join(" · ");
+  }
+  const bits = [];
+  if (p.games != null) bits.push(`${p.games} games`);
+  if (p.season_points != null) bits.push(`${p.season_points} pts`);
+  if (p.points_per_game != null) bits.push(`${p.points_per_game}/g`);
+  if (p.last3_points_per_game != null) bits.push(`last 3: ${p.last3_points_per_game}/g`);
+  if (p.trend_vs_season) {
+    bits.push(`trend ${p.trend_vs_season > 0 ? "+" : ""}${p.trend_vs_season}`);
+  }
+  if (p.age != null) bits.push(`age ${p.age}`);
+  if (p.win_now) bits.push(`win-now ${p.win_now}`);
+  if (p.future) bits.push(`future ${p.future}`);
+  return bits.join(" · ");
+}
+
+function playerRow(p) {
+  const row = el("div", "prow");
+
+  if (p.empty) {
+    row.appendChild(el("span", "slot", p.slot || ""));
+    row.appendChild(el("span", "nm meta", "— empty —"));
+    row.appendChild(el("span", "num dim", ""));
+    return row;
+  }
+
+  row.appendChild(el("span", "slot", p.slot || p.position || ""));
+
+  const nm = el("span", "nm");
+  nm.appendChild(document.createTextNode(p.name || "—"));
+  // The slot column already carries position when there is a lineup, so only
+  // repeat it where there isn't one. "FA" rather than a blank where Sleeper has
+  // no NFL team: that is why there are no numbers, and it is the useful half of
+  // the answer for a player stashed on a taxi squad.
+  const tail = [
+    p.slot ? p.position : null,
+    p.team || (p.no_stats ? "FA" : null),
+  ].filter(Boolean).join(" ");
+  if (tail) nm.appendChild(el("small", null, ` ${tail}`));
+  // A value only appears when there is one. Valuations are floored at zero
+  // against replacement level, so most of any roster has none — a column of
+  // zeroes would read as a verdict on players who are simply replaceable.
+  if (p.future) {
+    const chip = el("span", "val", Math.round(p.future));
+    chip.title = "future value above replacement";
+    nm.appendChild(chip);
+  }
+  row.appendChild(nm);
+
+  const num = el("span", p.no_stats ? "num dim" : "num",
+                 p.no_stats ? "—" : (p.points_per_game ?? "—"));
+  row.appendChild(num);
+
+  row.title = `${p.name || ""} — ${detailOf(p)}`;
+  return row;
+}
+
+function renderRoster(container, data) {
+  container.innerHTML = "";
+  if (data.error) {
+    container.appendChild(el("div", "caveat", data.error));
+    return;
+  }
+
+  container.appendChild(el("h2", null, data.team + (data.is_you ? " (you)" : "")));
+  const sub = [
+    data.record,
+    data.points_for ? `${Math.round(data.points_for)} PF` : null,
+  ].filter(Boolean).join(" · ");
+  container.appendChild(el("div", "meta", sub || `${data.league} · ${data.format}`));
+
+  const sections = [
+    ["starters", "starters"], ["bench", "bench"],
+    ["taxi", "taxi squad"], ["reserve", "injured reserve"],
+  ];
+  for (const [key, label] of sections) {
+    const list = data[key] || [];
+    if (!list.length) continue;
+    container.appendChild(el("div", "sect", label));
+    for (const p of list) container.appendChild(playerRow(p));
+  }
+
+  const basis = data.stats_season && data.stats_season !== data.season
+    ? `points per game, ${data.stats_season}`
+    : "points per game";
+  container.appendChild(el("div", "caveat", basis));
+  if (data.win_now_is_zero_for_everyone) {
+    container.appendChild(el("div", "caveat", data.win_now_is_zero_for_everyone));
+  }
+}
+
+function renderStandings(container, data) {
+  container.innerHTML = "";
+  if (data.error) {
+    container.appendChild(el("div", "caveat", data.error));
+    return;
+  }
+  if (data.note) container.appendChild(el("div", "caveat warn", data.note));
+
+  for (const row of data.standings) {
+    const line = el("div", "srow" + (row.is_you ? " me" : ""));
+    line.appendChild(el("span", "rk", row.rank));
+    line.appendChild(el("span", "tm", row.team));
+    line.appendChild(el("span", "num", row.record));
+    line.appendChild(el("span", "num", Math.round(row.points_for)));
+    line.title = `${row.team} — ${row.record}, ${row.points_for} points for`;
+    // Standings double as the way into a team: seeing who is 11-3 and wanting
+    // to know what they have is one thought, not two.
+    line.addEventListener("click", () => {
+      panel.rosterId = row.roster_id;
+      setTab("teams");
+    });
+    container.appendChild(line);
+  }
+  container.appendChild(el("div", "caveat", "click a team to see its roster"));
+}
+
+function renderWaivers(container, data) {
+  container.innerHTML = "";
+
+  const chips = el("div", "chips");
+  for (const [value, label] of [["", "All"]].concat(
+    (data.positions || []).map(p => [p, p])
+  )) {
+    const chip = el("button", "chip" + (panel.position === value ? " on" : ""), label);
+    chip.type = "button";
+    chip.addEventListener("click", () => { panel.position = value; loadRight(); });
+    chips.appendChild(chip);
+  }
+  container.appendChild(chips);
+
+  if (data.error) {
+    container.appendChild(el("div", "caveat", data.error));
+    return;
+  }
+
+  for (const p of data.available) {
+    const row = playerRow(p);
+    // Recent form is what the wire is about, so it replaces season average as
+    // the number on the row — matching how the list is ranked.
+    row.lastElementChild.textContent = p.last3_points_per_game;
+    if (p.trending_adds_24h) {
+      const chip = el("span", "val", `+${p.trending_adds_24h}`);
+      chip.title = `${p.trending_adds_24h} adds across Sleeper in 24h`;
+      row.querySelector(".nm").appendChild(chip);
+    }
+    container.appendChild(row);
+  }
+
+  const shown = data.available.length;
+  container.appendChild(el("div", "caveat",
+    `${shown} of ${data.total} free agents with stats · ranked by ${data.ranked_by}`));
+  if (data.trending_note) container.appendChild(el("div", "caveat", data.trending_note));
+}
+
+async function getStandings(leagueId) {
+  if (!standingsCache) {
+    standingsCache = fetch(`/panel/standings?${q({league_id: leagueId})}`)
+      .then(r => r.json());
+  }
+  return standingsCache;
+}
+
+async function renderTeams(container, leagueId) {
+  const table = await getStandings(leagueId);
+  container.innerHTML = "";
+  if (table.error) {
+    container.appendChild(el("div", "caveat", table.error));
+    return;
+  }
+
+  const picker = el("select", "slim");
+  for (const row of table.standings) {
+    const opt = el("option", null, `${row.team}${row.is_you ? " (you)" : ""}`);
+    opt.value = row.roster_id;
+    picker.appendChild(opt);
+  }
+  if (panel.rosterId == null) {
+    const other = table.standings.find(r => !r.is_you) || table.standings[0];
+    panel.rosterId = other.roster_id;
+  }
+  picker.value = panel.rosterId;
+  picker.addEventListener("change", () => {
+    panel.rosterId = Number(picker.value);
+    loadRight();
+  });
+  container.appendChild(picker);
+
+  const body = el("div");
+  container.appendChild(body);
+  const roster = await fetch(
+    `/panel/roster?${q({league_id: leagueId, roster_id: panel.rosterId})}`
+  ).then(r => r.json());
+  renderRoster(body, roster);
+}
+
+function setTab(tab) {
+  panel.tab = tab;
+  for (const button of document.querySelectorAll(".tab")) {
+    button.classList.toggle("on", button.dataset.tab === tab);
+  }
+  loadRight();
+}
+
+for (const button of document.querySelectorAll(".tab")) {
+  button.addEventListener("click", () => setTab(button.dataset.tab));
+}
+
+async function loadLeft() {
+  if (left.hidden || !leagueSel.value) return;
+  left.innerHTML = "";
+  left.appendChild(el("div", "caveat", "loading…"));
+  try {
+    const data = await fetch(`/panel/roster?${q({league_id: leagueSel.value})}`)
+      .then(r => r.json());
+    renderRoster(left, data);
+  } catch (err) {
+    left.innerHTML = "";
+    left.appendChild(el("div", "caveat warn", err.message));
+  }
+}
+
+async function loadRight() {
+  if (right.hidden || !leagueSel.value) return;
+  rightBody.innerHTML = "";
+  rightBody.appendChild(el("div", "caveat", "loading…"));
+  try {
+    if (panel.tab === "teams") {
+      await renderTeams(rightBody, leagueSel.value);
+    } else if (panel.tab === "waivers") {
+      const data = await fetch(`/panel/waivers?${q({
+        league_id: leagueSel.value, position: panel.position,
+      })}`).then(r => r.json());
+      renderWaivers(rightBody, data);
+    } else {
+      renderStandings(rightBody, await getStandings(leagueSel.value));
+    }
+  } catch (err) {
+    rightBody.innerHTML = "";
+    rightBody.appendChild(el("div", "caveat warn", err.message));
+  }
+}
+
+// Rosters move on trades and waiver claims, so they are pulled from Sleeper on
+// every load and every switch rather than trusted from the last weekly refresh.
+// Panels render *after* it, so what you see is what Sleeper has right now.
+//
+// A failure is not fatal and must not read like one: the warehouse copy is a
+// complete answer that is merely older, and this app is supposed to work with
+// no network at all.
+async function syncLeague() {
+  if (!leagueSel.value) return;
+  sync.textContent = "updating rosters…";
+  sync.classList.remove("bad");
+  try {
+    const res = await fetch("/league/refresh", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({league_id: leagueSel.value}),
+    });
+    const body = await res.json();
+    if (!body.ok) {
+      sync.textContent = body.reason || "could not reach Sleeper";
+      sync.classList.add("bad");
+    } else if (body.changed) {
+      sync.textContent = `rosters updated · ${body.available_players} free agents`;
+    } else {
+      sync.textContent = "rosters current";
+    }
+  } catch (err) {
+    sync.textContent = "could not reach Sleeper — showing saved rosters";
+    sync.classList.add("bad");
+  }
+}
+
+// Everything that happens when a league becomes the current one. Runs whether
+// or not the side columns are open: the chat reads the same warehouse, so a
+// stale roster is a wrong answer there too.
+async function enterLeague() {
+  // Every cached thing here is league-scoped, so a switch invalidates all of it.
+  standingsCache = null;
+  panel.rosterId = null;
+  await syncLeague();
+  loadLeft();
+  loadRight();
+}
+
+function markToggles() {
+  toggleLeft.classList.toggle("on", !left.hidden);
+  toggleRight.classList.toggle("on", !right.hidden);
+}
+
+toggleLeft.addEventListener("click", () => {
+  left.hidden = !left.hidden;
+  markToggles();
+  loadLeft();
+});
+toggleRight.addEventListener("click", () => {
+  right.hidden = !right.hidden;
+  markToggles();
+  loadRight();
+});
+
+// Three columns need the width for three columns. Below that they start closed
+// rather than squeezing the chat into a gutter, and the toggles bring them back.
+left.hidden = window.innerWidth < 900;
+right.hidden = window.innerWidth < 1150;
+markToggles();
+setTab(panel.tab);
+
+// ------------------------------------------------------------------ chat
 
 // A thread is pinned to one league, so switching starts a new one. Saying so
 // matters: without the note, a switch looks like the history just vanished.
 leagueSel.addEventListener("change", () => {
   conversationId = null;
   showRoster(leagueSel.value);
-  const note = document.createElement("div");
-  note.className = "note";
-  note.textContent = `— switched to ${leagueSel.selectedOptions[0].textContent} · new conversation —`;
-  log.appendChild(note);
-  log.scrollTop = log.scrollHeight;
+  note(`— switched to ${leagueSel.selectedOptions[0].textContent} · new conversation —`);
+  enterLeague();
 });
 
 function addTurn(who, text) {
@@ -173,6 +867,7 @@ form.addEventListener("submit", async (e) => {
   input.value = "";
   send.disabled = true;
   leagueSel.disabled = true;
+  findBtn.disabled = true;
 
   const turn = addTurn("assistant", "");
   const bubble = turn.querySelector(".bubble");
@@ -248,6 +943,7 @@ form.addEventListener("submit", async (e) => {
     bubble.classList.remove("cursor");
     send.disabled = false;
     leagueSel.disabled = false;
+    findBtn.disabled = false;
     input.focus();
   }
 });

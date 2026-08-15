@@ -10,6 +10,26 @@ from advisor.config import get_settings
 WAREHOUSE_SEASON = 2025
 
 
+@pytest.fixture(autouse=True)
+def _drop_memoised_database_state():
+    """Caches that are really database state, dropped between tests.
+
+    `players._available_seasons` and `tools.base._index_cache` are module-level
+    and keyed on nothing that changes when the connection is repointed, so a
+    test that swaps databases leaves the next one reading the previous
+    database's answer. That is not hypothetical: a temp database with no stats
+    poisoned `latest_season_with_data`, and a later test against the real
+    warehouse then saw `stats_season: None` — but only when run after it, which
+    is the worst way to find out.
+    """
+    from advisor import players
+    from advisor.tools import base
+
+    players.clear_caches()
+    base.clear_index_cache()
+    yield
+
+
 @pytest.fixture
 def temp_db(tmp_path: Path):
     """Point the repository layer at a throwaway database file."""

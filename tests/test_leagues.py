@@ -394,6 +394,68 @@ def test_listing_works_with_no_username_configured(league_db, monkeypatch):
     assert row["roster_id"] is None, "cannot know which roster without a username"
 
 
+# ------------------------------------------------------- who "you" are
+
+def test_an_account_set_in_the_app_outranks_the_env_username(league_db, as_user):
+    """`as_user` configures SLEEPER_USERNAME, so this asserts the precedence.
+
+    Someone typing their name into the UI is the more recent and more explicit
+    statement, and it is the only one of the two that takes effect without a
+    restart — `get_settings()` is lru_cached.
+    """
+    from advisor.context import list_leagues
+    from advisor.warehouse.account import set_account
+
+    _link("L1", "Dynasty A", "dynasty")
+    _own("L1", 7, "U-tester", "tester")
+    _own("L1", 3, "U-typed", "typed-in-the-app")
+
+    set_account("typed-in-the-app", "U-typed")
+
+    assert list_leagues()[0]["roster_id"] == 3
+
+
+def test_ownership_survives_a_rename_on_sleeper(league_db, as_user):
+    """A user id is stable; a display name is not. Matching on the id is what
+    keeps a linked league pointing at the right roster after a rename."""
+    from advisor.context import list_leagues
+    from advisor.warehouse.account import set_account
+
+    _link("L1", "Dynasty A", "dynasty")
+    _own("L1", 7, "U-tester", "the-old-name")
+
+    set_account("a-completely-new-name", "U-tester")
+
+    assert list_leagues()[0]["owned_roster_id"] == 7
+
+
+def test_an_account_replaces_rather_than_accumulates(league_db):
+    """One manager, one row. Two accounts would make "your roster" ambiguous
+    and the resolution order arbitrary."""
+    from advisor.warehouse.account import get_account, set_account
+
+    set_account("first", "U-1")
+    set_account("second", "U-2")
+
+    assert query("SELECT COUNT(*) AS n FROM sleeper_account")[0]["n"] == 1
+    assert get_account()["username"] == "second"
+
+
+def test_listing_leagues_works_on_a_warehouse_built_before_accounts_existed(
+    league_db, as_user
+):
+    """Every warehouse predating this feature has no `sleeper_account` table,
+    and `list_leagues` reads it on every lookup — so a missing table would break
+    both interfaces at once, not just the new panel."""
+    from advisor.context import list_leagues
+
+    _link("L1", "Dynasty A", "dynasty")
+    _own("L1", 7, "U-tester", "tester")
+    query("DROP TABLE IF EXISTS sleeper_account")
+
+    assert list_leagues()[0]["roster_id"] == 7
+
+
 def test_an_unlinked_league_id_is_refused(league_db, as_user):
     """Unvalidated, a bad id reached the web layer's generator and killed the
     SSE stream after a 200 had already been sent."""
